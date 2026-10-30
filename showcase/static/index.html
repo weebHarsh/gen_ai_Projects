@@ -60,7 +60,7 @@ header.top{border-bottom:1px solid var(--line);background:var(--surface)}
 .brand small{display:block;font:500 .72rem var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
 .brand h1{font-size:1.45rem;margin-top:2px}
 .brand p{color:var(--ink-2);max-width:60ch;margin:4px 0 0;font-size:.92rem}
-.top-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.top-tools{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
 .pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-strong);border-radius:999px;padding:4px 11px;font:500 .76rem var(--mono);background:var(--surface-2);color:var(--ink);max-width:100%}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);flex:none}
 .pill.ok .dot{background:var(--ok)} .pill.warn .dot{background:var(--warn)} .pill.err .dot{background:var(--err)}
@@ -83,7 +83,7 @@ section.panel-sec.on{display:block}
 @media (max-width:760px){.grid2{grid-template-columns:minmax(0,1fr)}}
 
 /* controls */
-input[type=text],select,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line-strong);border-radius:5px;padding:9px 10px;min-height:40px}
+input[type=text],input[type=password],select,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line-strong);border-radius:5px;padding:9px 10px;min-height:40px}
 label.f{display:block;font:500 .72rem var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);margin-bottom:4px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
 .row > .grow{flex:1 1 220px;min-width:0}
@@ -101,6 +101,18 @@ button[disabled]{opacity:.55;cursor:not-allowed}
 .tag.err{color:var(--err);border-color:var(--err);background:var(--err-soft)}
 .tag.acc{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
 
+/* access */
+.access{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap}
+.access .acc-form{display:flex;gap:6px;flex:1 1 100%;align-items:center;flex-wrap:wrap}
+.access .acc-form input{flex:1 1 140px;min-width:0;width:auto}
+.access .sm,button.sm{min-height:32px;padding:4px 11px;font-size:.78rem}
+.access .acc-form[hidden]{display:none}
+.acc-msg{flex:1 1 100%;font-size:.8rem;color:var(--ink-2)}
+.acc-msg.err{color:var(--err)}
+.tiernote{font-size:.85rem;color:var(--ink-2);margin:8px 0 0}
+.state.lock{border-style:solid;border-color:var(--warn);background:var(--warn-soft);color:var(--ink)}
+.state.lock strong{color:var(--warn)}
+.approval .err-line{color:var(--err);font-size:.85rem;flex:1 1 100%}
 /* states */
 .state{border:1px dashed var(--line-strong);border-radius:6px;padding:18px;color:var(--ink-2);background:var(--surface-2)}
 .state strong{display:block;color:var(--ink);margin-bottom:4px}
@@ -228,6 +240,7 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
       </div>
       <div class="top-tools">
         <span id="status" class="pill live" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">checking backend</span></span>
+        <div class="access" id="access" aria-label="Presenter access"></div>
         <button id="theme" type="button" aria-label="Toggle colour theme">Theme</button>
       </div>
     </div>
@@ -250,6 +263,7 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
       <button class="primary" type="submit" id="ask-go">Ask</button>
     </div>
     <div class="chips" id="ask-chips" aria-label="Example questions"></div>
+    <p class="tiernote" id="tier-note-ask"></p>
   </form>
   <div id="ask-out" class="stack" style="margin-top:14px" aria-live="polite">
     <div class="state"><strong>No question asked yet</strong>Pick an example above. The last one asks for something the documents do not contain, to show the assistant saying it does not know.</div>
@@ -289,6 +303,7 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
       <div><b>complex</b> &rarr; Opus<p class="muted">Multi-document comparisons and conflict analysis.</p></div>
     </div>
     <p class="muted">The router classifies the question and picks a tier. Each tier maps to a model on every provider. If the chosen provider is rate-limited or errors, the call falls through to the next configured provider and the trace records a <span class="mono">fallback</span> span. Picking a provider yourself skips routing.</p>
+    <p class="tiernote" id="tier-note-models"></p>
   </div>
   <div class="card" style="margin-top:12px">
     <h3>Providers</h3>
@@ -297,6 +312,7 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
   <div class="card" style="margin-top:12px">
     <h3>Compare</h3>
     <p class="muted">Ask one question to 1 to 4 configured providers and read the answers side by side.</p>
+    <div id="cmp-lock"></div>
     <form id="cmp-form" autocomplete="off">
       <div class="cmp-pick" id="cmp-pick" role="group" aria-label="Providers to compare"></div>
       <div class="row">
@@ -346,7 +362,6 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
       <ul class="links">
         <li><a href="https://github.com/weebHarsh/gen_ai_Projects" target="_blank" rel="noopener">GitHub repository</a><span class="mono">weebHarsh/gen_ai_Projects</span></li>
         <li><a href="https://claude.ai/artifact/6A9JXoaGLsyMuh7DhYMdP3" target="_blank" rel="noopener">Sprint tracker and decision log</a></li>
-        <li><a href="/docs" target="_blank" rel="noopener">API docs (Swagger)</a><span class="mono">/docs</span></li>
         <li><a href="/api/health" target="_blank" rel="noopener">Health check</a><span class="mono">/api/health</span></li>
       </ul></div>
     <div class="card"><h3>What to say</h3>
@@ -354,7 +369,7 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
         <li>Routing picks Haiku, Sonnet or Opus per question, so cost follows difficulty.</li>
         <li>Providers fall through a chain, and the app degrades to retrieval-only instead of failing.</li>
         <li>The agent pauses for human approval before any action that changes state.</li>
-        <li>Every request carries a trace, so latency and token spend are visible per step.</li>
+        <li>Every request carries a trace, so latency and token spend are visible per step (sent to Langfuse too, optionally, when keys are set).</li>
         <li>A golden-set eval gates changes, and the offline suite adds Ragas and DeepEval.</li>
       </ul></div>
   </div>
@@ -367,7 +382,7 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
 'use strict';
 var SECTIONS=[['ask','Ask'],['agent','Agent'],['models','Models'],['trace','Trace'],['evals','Evals'],['background','Background'],['architecture','Architecture']];
 var $=function(s,r){return (r||document).querySelector(s)};
-var state={providers:[],available:[],lastTrace:null,lastTraceLabel:'',threadId:null,loaded:{},mgr:null};
+var state={access:null,code:null,providers:[],available:[],lastTrace:null,lastTraceLabel:'',threadId:null,loaded:{},mgr:null};
 var TIER={quick:'Haiku',default:'Sonnet',complex:'Opus'};
 
 function h(tag,attrs,kids){
@@ -386,6 +401,7 @@ function stateBox(title,body,err){return h('div',{class:'state'+(err?' err':''),
 function api(path,opts){
   opts=opts||{};
   var init={method:opts.method||'GET',headers:{}};
+  if(state.code)init.headers['x-demo-unlock']=state.code;
   if(opts.body!==undefined){init.method=opts.method||'POST';init.headers['Content-Type']='application/json';init.body=JSON.stringify(opts.body)}
   return fetch(path,init).then(function(r){
     return r.text().then(function(t){
@@ -396,6 +412,8 @@ function api(path,opts){
     });
   },function(){var e=new Error('Could not reach the server. Check your connection and try again.');e.status=0;throw e});
 }
+function store(op,k,v){try{if(op==='get')return sessionStorage.getItem(k);if(op==='set')sessionStorage.setItem(k,v);else sessionStorage.removeItem(k)}catch(e){}return null}
+state.code=store('get','demo-unlock')||null;
 function errMsg(e){
   if(e.status===429)return 'Rate limit reached'+(e.retryAfter?' - try again in '+e.retryAfter+' s':' - wait a moment and retry')+'.';
   return e.message||'Something went wrong.';
@@ -441,12 +459,59 @@ window.addEventListener('hashchange',function(){route();window.scrollTo(0,0)});
 /* ---------- health + providers ---------- */
 function loadHealth(){
   var p=$('#status');
-  api('/api/health').then(function(d){
-    var n=(d.providers||[]).length;
+  return api('/api/health').then(function(d){
+    var n=(d.providers||[]).length,a=d.access||null;
+    state.access=a;
+    if(a&&!a.unlocked&&state.code){state.code=null;store('del','demo-unlock')}
     p.className='pill '+(d.mode==='llm'?'ok':'warn');
-    $('#status-text').textContent='mode '+d.mode+' / '+(d.retriever||'?')+' / '+n+' provider'+(n===1?'':'s')+' configured';
-    p.title=d.mode==='llm'?'A model answers questions.':'No model available: answers are extracted passages.';
+    $('#status-text').textContent='mode '+d.mode+' / '+(d.retriever||'?')+' / '+n+' provider'+(n===1?'':'s')+' configured'+(a?' / '+(a.unlocked?'presenter unlocked':'public'):'');
+    p.title=(d.mode==='llm'?'A model answers questions.':'No model available: answers are extracted passages.')+(a?(a.unlocked?' Presenter access is unlocked.':' Public access: limited tiers, no live compare or background runs.'):'');
+    renderAccess();applyLocks();
   },function(e){p.className='pill err';$('#status-text').textContent='backend unreachable';p.title=errMsg(e)});
+}
+function isLocked(){return !!(state.access&&!state.access.unlocked)}
+function lockBox(){
+  var a=state.access||{};
+  return h('div',{class:'state lock',role:'status'},[h('strong',{text:'Presenter feature: unlock to run this live'}),a.unlock_configured?'Use Presenter access in the header with the presenter code. Public visitors can read everything else on this page.':'Presenter access is not enabled on this deployment.']);
+}
+function applyLocks(){
+  var a=state.access,locked=isLocked();
+  var tn=a?(a.unlocked?'Presenter unlocked: every tier, including Opus, is available.':'Public visitors are limited to the '+(TIER[a.max_tier_public]||a.max_tier_public||'Sonnet')+' tier and below.'+(a.unlock_configured?' The presenter unlock enables Opus.':'')):'';
+  $('#tier-note-ask').textContent=tn;$('#tier-note-models').textContent=tn;
+  var cl=clear($('#cmp-lock'));if(locked)cl.appendChild(lockBox());
+  $('#cmp-go').disabled=locked||!$$('#cmp-pick input').length;
+  if(state.bgLock)state.bgLock(locked);
+}
+function renderAccess(){
+  var box=clear($('#access')),a=state.access;
+  if(!a||!a.unlock_configured)return;
+  var msg=h('span',{class:'acc-msg',id:'acc-msg',role:'status'});
+  if(a.unlocked){
+    box.appendChild(h('span',{class:'tag ok',text:'Presenter: unlocked'}));
+    box.appendChild(h('button',{type:'button',class:'sm',text:'Lock',onclick:function(){state.code=null;store('del','demo-unlock');loadHealth()}}));
+    return;
+  }
+  var form=h('form',{class:'acc-form',autocomplete:'off',hidden:true});
+  var inp=h('input',{type:'password',id:'acc-code','aria-label':'Presenter code',placeholder:'Presenter code',autocomplete:'off',required:true});
+  var go=h('button',{type:'submit',class:'primary sm',text:'Submit'});
+  form.appendChild(inp);form.appendChild(go);
+  var open=h('button',{type:'button',class:'sm',text:'Unlock','aria-expanded':'false','aria-controls':'acc-form',onclick:function(){
+    form.hidden=!form.hidden;open.setAttribute('aria-expanded',String(!form.hidden));if(!form.hidden)inp.focus();
+  }});
+  form.id='acc-form';
+  form.addEventListener('submit',function(ev){
+    ev.preventDefault();var code=inp.value.trim();if(!code)return;
+    go.disabled=true;msg.className='acc-msg';msg.textContent='Checking...';
+    api('/api/unlock',{body:{code:code}}).then(function(){
+      state.code=code;store('set','demo-unlock',code);
+      return loadHealth();
+    },function(e){
+      msg.className='acc-msg err';
+      msg.textContent=e.status===403?'That code was not accepted.':errMsg(e);
+      go.disabled=false;inp.select();
+    });
+  });
+  box.appendChild(open);box.appendChild(form);box.appendChild(msg);
 }
 function loadProviders(force){
   if(state.provPromise&&!force)return state.provPromise;
@@ -464,7 +529,7 @@ function loadProviders(force){
 function setTrace(t,label){if(t&&t.spans){state.lastTrace=t;state.lastTraceLabel=label;var b=$('a[data-s="trace"]',nav);b.setAttribute('data-fresh','1');}}
 
 /* ---------- ASK ---------- */
-var ASK_EX=['How many unused leave days can I carry forward?','What is the hotel cap per night in metro cities?','Compare the leave and expense policies and tell me where they conflict','What is the CEO salary?'];
+var ASK_EX=['How many unused leave days can I carry forward?','What is the hotel cap per night in metro cities?','Compare the leave and expense policies and tell me where they conflict','My laptop was stolen, what do I do and who do I tell?','What is the CEO salary?'];
 ASK_EX.forEach(function(q){$('#ask-chips').appendChild(h('button',{type:'button',class:'chip',text:q,onclick:function(){$('#ask-q').value=q;$('#ask-form').requestSubmit()}}))});
 function routeBlock(r){
   if(!r)return null;
@@ -473,7 +538,8 @@ function routeBlock(r){
     h('dt',{text:'Route'}),h('dd',{},[h('span',{class:'tag acc',text:tierName+' tier'}),' ',h('span',{class:'tag',text:r.tier||'-'}),r.pinned?[' ',h('span',{class:'tag',text:'pinned'})][1]:null]),
     h('dt',{text:'Model'}),h('dd',{class:'mono',text:(r.provider||'')+' / '+(r.model||'')}),
     h('dt',{text:'Why'}),h('dd',{text:r.reason||'-'}),
-    h('dt',{text:'Est. cost'}),h('dd',{class:'num',text:fmtUsd(r.est_cost_usd)})
+    h('dt',{text:'Est. cost'}),h('dd',{class:'num',text:fmtUsd(r.est_cost_usd)}),
+    r.failed?h('dt',{text:'Result'}):null,r.failed?h('dd',{},[h('span',{class:'tag warn',text:'provider failed'}),' Provider failed, answered from retrieval only.']):null
   ]);
 }
 function modeBanner(d){
@@ -522,19 +588,21 @@ $('#ask-form').addEventListener('submit',function(ev){
 });
 
 /* ---------- AGENT ---------- */
-var CHAT_EX=["My whole team's VPN is down, raise a P2 ticket","How many sick days do I get?","What is the AI tool usage policy?","Check the status of ticket INC-1042"];
+var CHAT_EX=["My whole team's VPN is down, raise a P2 ticket","How many days of sick leave do I get?","What's my leave balance if I worked 7 months, took 5 days and carried 3?"];
 CHAT_EX.forEach(function(q){$('#chat-chips').appendChild(h('button',{type:'button',class:'chip',text:q,onclick:function(){$('#chat-in').value=q;$('#chat-form').requestSubmit()}}))});
 var chat=$('#chat');
+var pending=false,lastUserMsg='',lastApproval=null;
 function chatAdd(el){var e=$('#chat-empty');if(e)e.remove();chat.appendChild(el);chat.scrollTop=chat.scrollHeight;return el}
+function chatNote(text,alert){return chatAdd(h('div',{class:'msg note',role:alert?'alert':'status',text:text}))}
 function setThread(id){state.threadId=id||null;$('#thread-tag').textContent=id?'thread '+String(id).slice(0,8):'no thread yet'}
-$('#chat-reset').addEventListener('click',function(){setThread(null);pending=false;busy(false);clear(chat).appendChild(h('div',{class:'state',id:'chat-empty'},[h('strong',{text:'New thread'}),'Memory from the previous conversation is cleared.']))});
-var pending=false;
+$('#chat-reset').addEventListener('click',function(){setThread(null);pending=false;lastApproval=null;busy(false);clear(chat).appendChild(h('div',{class:'state',id:'chat-empty'},[h('strong',{text:'New thread'}),'Memory from the previous conversation is cleared.']))});
 function busy(on){$('#chat-go').disabled=on||pending;$('#chat-in').disabled=on||pending}
 function $$(s){return Array.prototype.slice.call(document.querySelectorAll(s))}
 function renderAgent(d){
   setThread(d.thread_id||state.threadId);
   setTrace(d.trace,'Agent turn');
   if(d.mode==='retrieval-only'){chatAdd(h('div',{class:'msg note',text:d.notice||'The agent needs a model provider, and none is configured.'}))}
+  if(d.route&&d.route.failed)chatAdd(h('div',{class:'msg note',text:'Provider failed, answered from retrieval only.'}));
   var steps=d.steps||[];
   if(d.reply||steps.length){
     var m=h('div',{class:'msg bot'});
@@ -543,46 +611,77 @@ function renderAgent(d){
     chatAdd(m);
   }
   if(d.status==='pending_approval'&&d.approval_request){
-    var ar=d.approval_request,tid=d.thread_id||state.threadId;
-    var card=h('div',{class:'approval',role:'group','aria-label':'Approval required'},[
-      h('h4',{text:'Approval required'}),
-      h('div',{text:ar.question||'The agent wants to run this action.'}),
-      h('div',{class:'mono',style:'margin-top:6px;font-size:.82rem',text:'action: '+ar.action}),
-      h('pre',{text:JSON.stringify(ar.args||{},null,2)})
-    ]);
-    var row=h('div',{class:'row'});
-    function decide(ok){
-      Array.prototype.forEach.call(card.querySelectorAll('button'),function(b){b.disabled=true});pending=false;
-      row.replaceWith(h('div',{class:'faint mono',style:'font-size:.78rem',text:ok?'Approved - continuing...':'Rejected - continuing...'}));
-      busy(true);
-      api('/api/approve',{body:{thread_id:tid,approved:ok}}).then(renderAgent).catch(function(e){
-        if(e.status===404)threadLost('That thread has expired on the server, so the pending action was dropped.');
-        else chatAdd(h('div',{class:'msg note',role:'alert',text:errMsg(e)}));
-      }).then(function(){busy(false)});
-    }
+    lastApproval={ar:d.approval_request,tid:d.thread_id||state.threadId};
+    showApproval(lastApproval);
+  } else {pending=false;lastApproval=null;busy(false)}
+}
+function showApproval(la){
+  var ar=la.ar,tid=la.tid;
+  var card=h('div',{class:'approval',role:'group','aria-label':'Approval required'},[
+    h('h4',{text:'Approval required'}),
+    h('div',{text:ar.question||'The agent wants to run this action.'}),
+    h('div',{class:'mono',style:'margin-top:6px;font-size:.82rem',text:'action: '+ar.action}),
+    h('pre',{text:JSON.stringify(ar.args||{},null,2)})
+  ]);
+  var row=h('div',{class:'row'});
+  function buttons(){
+    clear(row);
     row.appendChild(h('button',{type:'button',class:'primary',text:'Approve',onclick:function(){decide(true)}}));
     row.appendChild(h('button',{type:'button',class:'danger',text:'Reject',onclick:function(){decide(false)}}));
-    card.appendChild(row);
-    chatAdd(card);
-    pending=true;busy(false); /* input stays locked until the decision */
-  } else {pending=false;busy(false)}
-}
-function threadLost(msg){setThread(null);chatAdd(h('div',{class:'msg note',role:'status',text:msg+' Started a new thread; earlier context is gone.'}))}
-$('#chat-form').addEventListener('submit',function(ev){
-  ev.preventDefault();
-  var msg=$('#chat-in').value.trim();if(!msg)return;
-  $('#chat-in').value='';
-  chatAdd(h('div',{class:'msg user',text:msg}));
-  var wait=chatAdd(h('div',{class:'msg bot faint mono',text:'Agent is working...'}));
-  busy(true);
-  function send(tid,retry){
-    var body={message:msg};if(tid)body.thread_id=tid;
-    return api('/api/chat',{body:body}).then(function(d){wait.remove();renderAgent(d)}).catch(function(e){
-      if(e.status===404&&tid&&!retry){threadLost('The server no longer knows this thread.');return send(null,true)}
-      wait.remove();chatAdd(h('div',{class:'msg note',role:'alert',text:errMsg(e)}));
+  }
+  function failed(ok,text){
+    clear(row);
+    row.appendChild(h('div',{class:'err-line',role:'alert',text:text}));
+    row.appendChild(h('button',{type:'button',class:'primary',text:'Retry',onclick:function(){decide(ok)}}));
+  }
+  function decide(ok){
+    clear(row);row.appendChild(h('div',{class:'faint mono',style:'font-size:.78rem',text:ok?'Approving...':'Rejecting...'}));
+    pending=true;busy(true); /* stays locked until the server accepts the decision */
+    api('/api/approve',{body:{thread_id:tid,approved:ok}}).then(function(d){
+      pending=false;lastApproval=null;
+      clear(row).appendChild(h('div',{class:'faint mono',style:'font-size:.78rem',text:ok?'Approved':'Rejected'}));
+      Array.prototype.forEach.call(card.querySelectorAll('button'),function(b){b.disabled=true});
+      renderAgent(d);busy(false);
+    },function(e){
+      if(e.code==='unknown_thread'||e.status===404){
+        pending=false;lastApproval=null;
+        clear(row).appendChild(h('div',{class:'faint mono',style:'font-size:.78rem',text:'Expired: server restarted'}));
+        setThread(null);chatNote('The server restarted; replaying your request.');
+        runChat(lastUserMsg,null,true);return;
+      }
+      if(e.code==='approval_pending'||e.status===409){
+        buttons();row.insertBefore(h('div',{class:'err-line',role:'alert',text:'A decision is still pending for this action. Approve or reject it here first.'}),row.firstChild);busy(true);return;
+      }
+      failed(ok,errMsg(e)+' Your decision was not recorded.');busy(true);
     });
   }
-  send(state.threadId,false).then(function(){busy(false);if(!pending)$('#chat-in').focus()});
+  buttons();card.appendChild(row);
+  chatAdd(card);
+  pending=true;busy(false);
+}
+function runChat(msg,tid,replayed){
+  var wait=chatAdd(h('div',{class:'msg bot faint mono',text:'Agent is working...'}));
+  busy(true);
+  var body={message:msg};if(tid)body.thread_id=tid;
+  return api('/api/chat',{body:body}).then(function(d){wait.remove();renderAgent(d)},function(e){
+    wait.remove();
+    if(e.code==='thread_full'&&!replayed){chatNote('This conversation is full. Starting a new one.');setThread(null);return runChat(msg,null,true)}
+    if(e.code==='approval_pending'){
+      chatNote('A decision is pending. Approve or reject the action first.');
+      if(lastApproval&&!chat.querySelector('.approval .row button'))showApproval(lastApproval);else{pending=true}
+      return;
+    }
+    if(e.status===404&&tid&&!replayed){threadLost('The server no longer knows this thread.');return runChat(msg,null,true)}
+    chatNote(errMsg(e),true);
+  }).then(function(){busy(false);if(!pending)$('#chat-in').focus()});
+}
+function threadLost(msg){setThread(null);chatNote(msg+' Started a new thread; earlier context is gone.')}
+$('#chat-form').addEventListener('submit',function(ev){
+  ev.preventDefault();
+  var msg=$('#chat-in').value.trim();if(!msg||pending)return;
+  $('#chat-in').value='';lastUserMsg=msg;
+  chatAdd(h('div',{class:'msg user',text:msg}));
+  runChat(msg,state.threadId,false);
 });
 
 /* ---------- MODELS ---------- */
@@ -617,12 +716,13 @@ function renderProviders(){
   var pick=clear($('#cmp-pick')),conf=state.providers.filter(function(p){return p.configured});
   if(!conf.length)pick.appendChild(h('span',{class:'faint',text:'No provider is configured on this deployment, so there is nothing to compare.'}));
   conf.forEach(function(p,i){pick.appendChild(h('label',{},[h('input',{type:'checkbox',name:'cmp',value:p.name,checked:i<2}),p.label||p.name]))});
-  $('#cmp-go').disabled=!conf.length;
+  applyLocks();
 }
 $('#cmp-form').addEventListener('submit',function(ev){
   ev.preventDefault();
   var sel=$$('#cmp-pick input:checked').map(function(i){return i.value});
   var out=clear($('#cmp-out'));
+  if(isLocked()){out.appendChild(lockBox());return}
   if(!sel.length){out.appendChild(stateBox('Pick a provider','Tick between one and four providers.'));return}
   if(sel.length>4){out.appendChild(stateBox('Too many providers','Compare takes at most four at a time.'));return}
   var btn=$('#cmp-go');btn.disabled=true;
@@ -644,7 +744,11 @@ $('#cmp-form').addEventListener('submit',function(ev){
       ]);g.appendChild(c);
     });
     if(rs.length)out.appendChild(g);
-  }).catch(function(e){clear(out);out.appendChild(stateBox('Comparison failed',errMsg(e),true))}).then(function(){btn.disabled=false});
+  }).catch(function(e){
+    clear(out);
+    if(e.code==='locked'||e.status===403){out.appendChild(lockBox());loadHealth();return}
+    out.appendChild(stateBox('Comparison failed',errMsg(e),true));
+  }).then(function(){btn.disabled=isLocked()||!$$('#cmp-pick input').length});
 });
 
 /* ---------- TRACE ---------- */
@@ -708,12 +812,14 @@ $('#ev-go').addEventListener('click',function(){
       h('span',{class:'tag '+(g.passed?'ok':'err'),style:'font-size:.85rem;padding:4px 10px',text:'GATE '+(g.passed?'PASS':'FAIL')}),
       h('span',{class:'muted'},[(g.name||'gate')+' >= '+pct(g.threshold)+' needed. Mode ',h('b',{text:d.mode||'-'}),', ran in ',h('span',{class:'num',text:fmtMs(d.latency_ms)}),'.'])
     ]));
+    if(d.mode==='retrieval-only')out.appendChild(h('div',{class:'banner',role:'status',style:'margin-top:10px'},[h('b',{text:'Retrieval-only run'}),h('div',{text:'Retrieval metrics only. Refusal and citation need a model, which this run did not call.'})]));
     var tiles=h('div',{class:'tiles'});
     [['mrr','MRR (rank of right document)'],['top1_rate','Right document ranked first'],['source_hit_rate','Right document in top 4'],['refusal_rate_out_of_scope','Out-of-scope refusal'],['citation_rate','Citation rate']].forEach(function(k){
       var v=m[k[0]];
+      if(v==null)return;
       tiles.appendChild(h('div',{class:'tile'},[h('div',{class:'l',text:k[1]}),h('div',{class:'v',text:pct(v)}),h('div',{class:'bar'},[h('i',{style:'width:'+Math.round((v||0)*100)+'%'})])]));
     });
-    out.appendChild(tiles);
+    if(tiles.children.length)out.appendChild(tiles);
     var rows=d.rows||[];
     if(!rows.length){out.appendChild(stateBox('No rows returned','The golden set came back empty.'));return}
     var tb=h('tbody');rows.forEach(function(r){tb.appendChild(h('tr',{},[
@@ -733,7 +839,7 @@ function loadBackground(){
       out.appendChild(h('div',{class:'card'},[
         h('span',{class:'tag warn',text:'not enabled on this deployment'}),
         h('h3',{style:'margin-top:12px',text:'What it would do'}),
-        h('p',{text:'You pick a task, such as drafting a summary of the expense policy changes or auditing the knowledge base for conflicting rules. A Claude Managed Agent starts in a hosted sandbox, works for a few minutes on its own, and streams its progress here. When it needs Acme policy facts it calls a custom tool, which this server answers. Files it produces appear as downloads.'}),
+        h('p',{text:'You pick one of the tasks listed below. A Claude Managed Agent starts in a hosted sandbox, works for a few minutes on its own, and streams its progress here. When it needs Acme policy facts it calls a custom tool, which this server answers. Files it produces appear as downloads.'}),
         h('p',{class:'muted',text:d.hint||'It needs ANTHROPIC_API_KEY, MANAGED_AGENT_ID and MANAGED_ENVIRONMENT_ID set on the server. Run projects/07_claude_managed_agents to create the agent and environment.'}),
         (d.tasks||[]).length?h('div',{},[h('h3',{style:'margin-top:12px',text:'Tasks it would offer'}),h('ul',{},d.tasks.map(function(t){return h('li',{},[h('b',{text:t.title}),' - '+(t.description||'')])}))]):null
       ]));
@@ -751,18 +857,20 @@ function renderManagedUI(out,d){
   var desc=h('p',{class:'muted',id:'bg-desc'});
   function upd(){var t=tasks.filter(function(x){return x.id===sel.value})[0];desc.textContent=t?t.description||'':''}
   sel.addEventListener('change',upd);upd();
-  var start=h('button',{type:'button',class:'primary',text:'Start task'}),stop=h('button',{type:'button',text:'Stop watching',hidden:true});
+  var start=h('button',{type:'button',class:'primary',text:'Start task'}),lockSlot=h('div',{style:'margin-top:10px'}),stop=h('button',{type:'button',text:'Stop watching',hidden:true});
   var info=h('div',{class:'row',style:'margin-top:10px;align-items:center'});
   var feed=h('div',{class:'feed',role:'log','aria-live':'polite','aria-label':'Agent events',hidden:true});
   var files=h('div',{class:'card',hidden:true},[h('h3',{text:'Files produced'})]);
   var fl=h('ul',{class:'links'});files.appendChild(fl);
   if(!tasks.length)out.appendChild(stateBox('No tasks defined','The server reported Managed Agents as configured but offered no tasks.'));
   out.appendChild(h('div',{class:'card'},[
-    h('div',{class:'row'},[h('div',{class:'grow'},[h('label',{class:'f',for:'bg-task',text:'Task'}),sel]),start,stop]),desc,info]));
+    h('div',{class:'row'},[h('div',{class:'grow'},[h('label',{class:'f',for:'bg-task',text:'Task'}),sel]),start,stop]),desc,lockSlot,info]));
   out.appendChild(h('div',{style:'margin-top:12px'},[feed]));
   out.appendChild(h('div',{style:'margin-top:12px'},[files]));
-  var timer=null,session=null,after='',seen={},started=0,fileSeen={};
-  function halt(msg,cls){if(timer){clearTimeout(timer);timer=null}stop.hidden=true;start.disabled=false;if(msg)info.appendChild(h('span',{class:'tag '+(cls||''),text:msg}))}
+  var timer=null,session=null,after='',seen={},started=0,fileSeen={},running=false;
+  state.bgLock=function(locked){clear(lockSlot);if(locked)lockSlot.appendChild(lockBox());start.disabled=locked||running||!tasks.length};
+  state.bgLock(isLocked());
+  function halt(msg,cls){if(timer){clearTimeout(timer);timer=null}stop.hidden=true;running=false;start.disabled=isLocked();if(msg)info.appendChild(h('span',{class:'tag '+(cls||''),text:msg}))}
   function addEv(e){
     if(seen[e.id])return;seen[e.id]=1;
     var kind=e.type||'event',cls='msg',label=kind;
@@ -787,7 +895,7 @@ function renderManagedUI(out,d){
     });
   }
   start.addEventListener('click',function(){
-    clear(info);clear(feed);feed.hidden=false;clear(fl);files.hidden=true;seen={};fileSeen={};after='';start.disabled=true;
+    clear(info);clear(feed);feed.hidden=false;clear(fl);files.hidden=true;seen={};fileSeen={};after='';running=true;start.disabled=true;
     feed.appendChild(h('div',{class:'ev'},[h('div',{class:'t'}),h('div',{class:'faint',text:'Starting session...'})]));
     api('/api/managed/start',{body:{task_id:sel.value}}).then(function(r){
       clear(feed);session=r.session_id;started=Date.now();stop.hidden=false;
@@ -797,13 +905,18 @@ function renderManagedUI(out,d){
       feed.appendChild(h('div',{class:'ev',id:'bg-wait'},[h('div',{class:'t'}),h('div',{class:'faint',text:'Waiting for the first event...'})]));
       var w=$('#bg-wait');var obs=new MutationObserver(function(){if(feed.children.length>1&&w&&w.parentNode){w.remove()}});obs.observe(feed,{childList:true});
       poll();
-    }).catch(function(e){start.disabled=false;clear(feed);feed.hidden=true;info.appendChild(h('span',{class:'tag err',role:'alert',text:e.status===503?'Not configured: '+errMsg(e):errMsg(e)}))});
+    }).catch(function(e){
+      running=false;clear(feed);feed.hidden=true;
+      if(e.code==='locked'||e.status===403){loadHealth();start.disabled=true;clear(lockSlot).appendChild(lockBox());return}
+      start.disabled=isLocked();
+      info.appendChild(h('span',{class:'tag err',role:'alert',text:e.status===503?'Not configured: '+errMsg(e):errMsg(e)}));
+    });
   });
   stop.addEventListener('click',function(){halt('stopped - the agent keeps running server-side','warn')});
 }
 
 /* ---------- ARCHITECTURE ---------- */
-var DIAGRAM='flowchart LR\n  B["Browser<br/>this page"] -->|fetch /api| F["FastAPI on Vercel"]\n  F --> R{"Router<br/>quick / default / complex"}\n  R -->|quick| H["Haiku"]\n  R -->|default| S["Sonnet"]\n  R -->|complex| O["Opus"]\n  H --> P["Provider chain<br/>Claude, then free providers"]\n  S --> P\n  O --> P\n  F --> G["RAG<br/>BM25 or vector retriever"]\n  G --> K[("Acme knowledge base")]\n  G --> R\n  F --> A["LangGraph agent<br/>tools and memory"]\n  A --> HA{"Human approval"}\n  HA --> T["Tools: tickets, policy lookup"]\n  A --> R\n  F --> TR["Tracing"] --> LF["Langfuse"]\n  F --> E["Golden-set evals<br/>Ragas / DeepEval offline"]\n  F --> M["Claude Managed Agents"]\n  M -->|custom tool call| F\n';
+var DIAGRAM='flowchart LR\n  B["Browser<br/>this page"] -->|fetch /api| F["FastAPI on Vercel"]\n  F --> R{"Router<br/>quick / default / complex"}\n  R -->|quick| H["Haiku"]\n  R -->|default| S["Sonnet"]\n  R -->|complex| O["Opus"]\n  H --> P["Provider chain<br/>Claude, then free providers"]\n  S --> P\n  O --> P\n  F --> G["RAG<br/>BM25 or vector retriever"]\n  G --> K[("Acme knowledge base")]\n  G --> R\n  F --> A["LangGraph agent<br/>tools and memory"]\n  A --> HA{"Human approval"}\n  HA --> T["Tools: tickets, policy lookup"]\n  A --> R\n  F --> TR["Tracing"] -.-> LF["Langfuse (optional, when keys are set)"]\n  F --> E["Golden-set evals<br/>Ragas / DeepEval offline"]\n  F --> M["Claude Managed Agents"]\n  M -->|custom tool call| F\n';
 var mmState={tried:false,failed:false};
 function loadMermaid(){
   if(window.mermaid)return Promise.resolve();
@@ -823,7 +936,7 @@ function fallbackList(){
       'The provider chain tries Claude first, then the configured free providers.',
       'RAG retrieves from the Acme knowledge base with BM25 or a vector index.',
       'The LangGraph agent calls tools and pauses for human approval before changes.',
-      'Tracing records spans and forwards them to Langfuse.',
+      'Tracing records spans, and forwards them to Langfuse (optional, when keys are set).',
       'Golden-set evals run here; Ragas and DeepEval run offline.',
       'Claude Managed Agents run background tasks and call back for policy lookups.'
     ].map(function(t){return h('li',{text:t})}))]);
