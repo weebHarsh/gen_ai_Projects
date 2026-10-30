@@ -1,0 +1,21 @@
+{
+  "rag": [
+    {"question": "How many unused annual leave days can I carry forward to next year?", "reference": "Up to 8 unused days can be carried forward; the rest lapse on 31 March.", "source": "leave_policy.md"},
+    {"question": "When do I need a doctor's certificate for sick leave?", "reference": "A doctor's certificate is required for sick leave absences longer than 3 consecutive days.", "source": "leave_policy.md"},
+    {"question": "What is the hotel cap per night in metro cities?", "reference": "INR 7,000 per night in metro cities (INR 4,500 elsewhere).", "source": "expense_policy.md"},
+    {"question": "Within how many days must I submit an expense claim?", "reference": "Within 30 days of the expense being incurred, in Expensify.", "source": "expense_policy.md"},
+    {"question": "How many days a week do I need to be in the office?", "reference": "3 days per week in office; Tuesday, Wednesday and Thursday are core days.", "source": "remote_work_policy.md"},
+    {"question": "What are the password rules?", "reference": "Passwords must be at least 14 characters and are rotated every 180 days.", "source": "it_security_policy.md"},
+    {"question": "What is the first response time for a P2 IT ticket?", "reference": "1 hour first response, with a resolution target of 1 business day.", "source": "it_support.md"},
+    {"question": "What faithfulness score must a GenAI use case reach before going live?", "reference": "Faithfulness of at least 0.85 on its golden dataset.", "source": "ai_usage_guidelines.md"},
+    {"question": "How much is the referral bonus and when is it paid?", "reference": "INR 75,000, paid after the new hire completes 3 months.", "source": "benefits.md"},
+    {"question": "What is the CEO's salary?", "reference": "I don't know based on the policies.", "source": null}
+  ],
+  "agent": [
+    {"input": "What is the sick leave policy?", "expected_tools": ["search_policies"]},
+    {"input": "I've worked 6 months this year, taken 4 days and carried forward 2. What's my leave balance?", "expected_tools": ["leave_balance"]},
+    {"input": "The VPN is down for my whole team of 6 people. Please raise a ticket.", "expected_tools": ["create_it_ticket"]},
+    {"input": "What's the hotel cap in metro cities and how long do I have to submit the claim?", "expected_tools": ["search_policies"]},
+    {"input": "Hi! What can you help me with?", "expected_tools": []}
+  ]
+}
