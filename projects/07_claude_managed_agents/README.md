@@ -12,7 +12,7 @@
 
 ## Run
 ```bash
-pip install anthropic python-dotenv      # already in requirements.txt
+pip install anthropic python-dotenv      # already in the requirements files
 python projects/07_claude_managed_agents/setup_agent.py --print   # inspect config, no API call
 python projects/07_claude_managed_agents/setup_agent.py           # creates env + agent, saves IDs
 python projects/07_claude_managed_agents/run_session.py           # streams the run, downloads outputs/

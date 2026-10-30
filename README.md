@@ -24,7 +24,7 @@ All eight projects share one fictional company (**Acme Corp**) and one knowledge
 ```bash
 git clone https://github.com/weebHarsh/gen_ai_Projects && cd gen_ai_Projects
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-full.txt
 cp .env.example .env        # add ANTHROPIC_API_KEY (and Langfuse keys for project 05)
 
 # 1. Offline check: no keys, no network, ~5 s

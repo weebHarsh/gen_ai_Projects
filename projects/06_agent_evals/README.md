@@ -4,7 +4,7 @@
 
 ## Setup
 ```bash
-pip install -r requirements.txt -r projects/06_agent_evals/requirements-evals.txt
+pip install -r requirements-full.txt -r projects/06_agent_evals/requirements-evals.txt
 ```
 > **Dependency gotcha (real, Oct 2026):** `ragas 0.4.x` imports a module removed in `langchain-community 0.4.2`, so the evals requirements pin `langchain-community<0.4.2`. Pin versions in production and test upgrades in CI.
 

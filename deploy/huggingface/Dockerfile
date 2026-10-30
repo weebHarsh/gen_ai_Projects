@@ -17,8 +17,8 @@ WORKDIR /app
 # Hugging Face requires the app to run as a non-root user with UID 1000.
 RUN useradd --create-home --uid 1000 user && chown 1000:1000 /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-full.txt .
+RUN pip install --no-cache-dir -r requirements-full.txt
 
 # Bake the embedding model into the image so cold starts don't download it.
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')" \

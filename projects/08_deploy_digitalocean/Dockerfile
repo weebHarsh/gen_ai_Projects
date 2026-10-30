@@ -5,8 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8080 \
     FASTEMBED_CACHE_PATH=/opt/fastembed
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-full.txt .
+RUN pip install --no-cache-dir -r requirements-full.txt
 
 # Bake the embedding model into the image so cold starts don't download 130 MB.
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"

@@ -29,7 +29,7 @@ FastAPI app on port 7860. The image is built from `deploy/huggingface/Dockerfile
    `APP_API_KEY`). Secrets are passed to the running container as environment variables and are not stored in the
    repo or the image. `RETRIEVER=vector` is already set in the Dockerfile.
 
-4. **Wait for the build.** The first build installs `requirements.txt` and downloads the embedding model, so it
+4. **Wait for the build.** The first build installs `requirements-full.txt` and downloads the embedding model, so it
    takes several minutes. Watch *Logs → Build*. When the status says *Running*, the app is up. If the build fails,
    check the log for a missing path (for example `showcase/` not committed yet) or a dependency error.
 
