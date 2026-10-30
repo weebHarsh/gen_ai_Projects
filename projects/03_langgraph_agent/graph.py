@@ -32,8 +32,17 @@ SYSTEM = SystemMessage(
 )
 
 
-def build_graph(checkpointer=None):
-    llm = get_llm().bind_tools(TOOLS)
+def _bind_tools(llm):
+    """bind_tools, also through a fallback chain (get_llm_chain returns RunnableWithFallbacks)."""
+    if hasattr(llm, "runnable") and hasattr(llm, "fallbacks"):
+        return _bind_tools(llm.runnable).with_fallbacks([_bind_tools(f) for f in llm.fallbacks])
+    return llm.bind_tools(TOOLS)
+
+
+def build_graph(checkpointer=None, llm=None):
+    """`llm` lets a caller choose the model per request (the hosted demo routes by difficulty);
+    default behaviour is unchanged: get_llm()."""
+    llm = _bind_tools(llm or get_llm())
 
     def agent(state: MessagesState) -> dict:
         return {"messages": [llm.invoke([SYSTEM, *state["messages"]])]}
