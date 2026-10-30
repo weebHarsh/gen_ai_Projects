@@ -62,7 +62,7 @@ def get_llm(provider: str | None = None, model: str | None = None, tier: str | N
     if p == "gateway":
         from langchain_anthropic import ChatAnthropic
 
-        token = reg.gateway_token()
+        token = kwargs.pop("api_key", None) or reg.gateway_token()
         if not token:
             raise RuntimeError("gateway needs AI_GATEWAY_API_KEY or a Vercel OIDC token")
         return ChatAnthropic(model=model or reg.PROVIDERS["gateway"].model_for(tier or "default"),
@@ -99,15 +99,17 @@ def get_llm(provider: str | None = None, model: str | None = None, tier: str | N
     raise ValueError(f"Unknown LLM_PROVIDER={p!r}")
 
 
-def get_llm_chain(tier: str = "default", prefer: str | None = None, max_providers: int = 4, **kwargs: Any):
+def get_llm_chain(tier: str = "default", prefer: str | None = None, max_providers: int = 4,
+                  names: Sequence[str] | None = None, **kwargs: Any):
     """A model that falls through to the next configured provider on any error (quota, 429, outage).
 
     Order = common.providers.FALLBACK_ORDER (Claude first, then free tiers), `prefer` first if set.
+    `names` replaces that list (already filtered to configured providers), e.g. providers.order_for(unlocked).
     Falls back to the FakeChatModel only if nothing is configured and LLM_PROVIDER=fake.
     """
     from common import providers as reg
 
-    names = reg.available()
+    names = list(names) if names is not None else reg.available()
     if prefer and prefer in names:
         names = [prefer] + [n for n in names if n != prefer]
     if not names:

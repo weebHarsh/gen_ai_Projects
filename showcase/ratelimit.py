@@ -6,8 +6,10 @@ runaway loop or a casual abuser, not a hard guarantee. Pair it with provider-sid
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from fastapi import Request
@@ -33,7 +35,7 @@ class _Bucket:
 class RateLimiter:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._buckets: dict[tuple[str, str], _Bucket] = {}
+        self._buckets: OrderedDict[tuple[str, str], _Bucket] = OrderedDict()
 
     def reset(self) -> None:
         with self._lock:
@@ -44,6 +46,7 @@ class RateLimiter:
         b = self._buckets.get((ip, name))
         if b is None:
             b = self._buckets[(ip, name)] = _Bucket(float(cap), now)
+        self._buckets.move_to_end((ip, name))
         b.tokens = min(float(cap), b.tokens + (now - b.updated) * cap / window)
         b.updated = now
         return b
@@ -53,9 +56,6 @@ class RateLimiter:
         limits = {"overall": OVERALL, "heavy": HEAVY, "poll": POLL}
         now = time.monotonic() if now is None else now
         with self._lock:
-            if len(self._buckets) > MAX_KEYS:  # drop idle entries so memory stays bounded
-                for key in [k for k, b in self._buckets.items() if now - b.updated > 120]:
-                    del self._buckets[key]
             buckets = [(self._refill(ip, k, limits[k], now), limits[k]) for k in kinds]
             wait = 0.0
             for b, (cap, window) in buckets:
@@ -65,12 +65,16 @@ class RateLimiter:
                 raise RateLimited(math.ceil(wait))
             for b, _ in buckets:
                 b.tokens -= 1
+            while len(self._buckets) > MAX_KEYS:  # hard bound: evict the least recently used entries
+                self._buckets.popitem(last=False)
 
 
 def client_ip(request: Request) -> str:
-    """First hop of X-Forwarded-For (Vercel sets it), else the socket peer."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    first = fwd.split(",")[0].strip()
-    if first and len(first) <= 45:
-        return first
+    """The rate-limit key. On Vercel the platform sets x-vercel-forwarded-for / x-real-ip (a client cannot spoof them
+    there); anywhere else only the socket peer is trusted. A client-supplied X-Forwarded-For is never used."""
+    if os.getenv("VERCEL") == "1":
+        for name in ("x-vercel-forwarded-for", "x-real-ip"):
+            first = request.headers.get(name, "").split(",")[0].strip()
+            if first and len(first) <= 45:
+                return first
     return request.client.host if request.client else "unknown"

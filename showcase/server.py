@@ -11,14 +11,18 @@ import os
 
 os.environ.setdefault("RETRIEVER", "bm25")  # must be set before rag_pipeline is imported
 
+import base64  # noqa: E402
+import contextvars  # noqa: E402
+import hmac  # noqa: E402
 import importlib.util  # noqa: E402
+import json  # noqa: E402
 import logging  # noqa: E402
 import re  # noqa: E402
 import sys  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
-from collections import OrderedDict  # noqa: E402
+from collections import OrderedDict, deque  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
@@ -41,16 +45,23 @@ from common.llm import provider as default_provider  # noqa: E402
 from common.observability import flush, trace_config  # noqa: E402
 from common.router import Decision, route  # noqa: E402
 from showcase.ratelimit import RateLimited, RateLimiter, client_ip  # noqa: E402
-from showcase.tracing import Tracer, scrub  # noqa: E402
+from showcase.tracing import Tracer, safe_error, scrub  # noqa: E402
 
 log = logging.getLogger("showcase")
 STATIC = Path(__file__).parent / "static"
 MAX_INPUT = 500
-RECURSION_LIMIT = 12
-LLM_KWARGS = {"max_tokens": 1000, "timeout": 25, "max_retries": 1}   # demo-sized, fail fast so the chain can fall through
+RECURSION_LIMIT = 8
+MAX_HISTORY = 8                  # messages sent to the model per agent call
+MAX_TURNS = 10                   # user turns per agent thread
+MAX_CHAIN = 2                    # providers in a fallback chain: 2 x 10 s timeout stays under the 45 s deadline
+REQUEST_DEADLINE_S = 45
+MAX_FILE_BYTES = 4_000_000
+LLM_KWARGS = {"max_tokens": 800, "timeout": 10, "max_retries": 0}   # demo-sized, fail fast so the chain can fall through
 TIER_ORDER = {"quick": 0, "default": 1, "complex": 2}
-CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# control chars, plus bidi overrides / zero-width characters (U+200B-200F, U+202A-202E, U+2066-2069)
+CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,100}$")
+THREAD_RE = re.compile(r"^[0-9a-f]{32}$")
 NO_MODEL_NOTICE = ("No model provider is configured on this demo (or every provider failed), so this is the "
                    "retrieval-only fallback: the most relevant policy passages, with citations, and no generated text.")
 
@@ -111,13 +122,113 @@ def rl_poll(request: Request) -> None:
 
 @app.middleware("http")
 async def _headers(request: Request, call_next):
-    token = request.headers.get("x-vercel-oidc-token")
-    if token:  # lets the `gateway` provider authenticate with the deployment's own identity
-        os.environ["VERCEL_OIDC_TOKEN"] = token
-    response = await call_next(request)
+    # The OIDC header is only ever held in a per-request ContextVar, and only after its claims check out.
+    # It is never written to os.environ (one request would then authenticate every other request).
+    reset = reg.request_oidc.set(verified_oidc(request.headers.get("x-vercel-oidc-token")))
+    try:
+        response = await call_next(request)
+    finally:
+        reg.request_oidc.reset(reset)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     return response
+
+
+def verified_oidc(token: str | None) -> str | None:
+    """The token if it looks like this project's Vercel OIDC token, else None. Only honoured on Vercel.
+
+    Claims are checked (iss, project_id, exp) but the signature is not: the AI Gateway verifies that when the token
+    is used, and a forged token only ever authenticates the forger's own request."""
+    if not token or os.getenv("VERCEL") != "1" or len(token) > 8192:
+        return None
+    project = os.getenv("VERCEL_PROJECT_ID", "")
+    try:
+        parts = token.split(".")
+        if len(parts) != 3 or not project:
+            return None
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        if not isinstance(claims, dict) or not str(claims.get("iss", "")).startswith("https://oidc.vercel.com/"):
+            return None
+        if claims.get("project_id") != project:
+            return None
+        exp = claims.get("exp")
+        if exp is not None and (not isinstance(exp, (int, float)) or exp < time.time()):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return token
+
+
+# --------------------------------------------------------------------------- access control and global budget
+def is_unlocked(request: Request) -> bool:
+    """Presenter access: x-demo-unlock must equal env DEMO_UNLOCK. Unset DEMO_UNLOCK means nobody is unlocked."""
+    code = os.getenv("DEMO_UNLOCK", "")
+    given = request.headers.get("x-demo-unlock", "")
+    return bool(code) and bool(given) and hmac.compare_digest(given.encode(), code.encode())
+
+
+def require_unlocked(request: Request) -> bool:
+    if not is_unlocked(request):
+        raise ApiError(403, "locked", "This feature is locked on the public demo. Enter the presenter code to use it.")
+    return True
+
+
+def max_tier_public() -> str:
+    t = os.getenv("MAX_TIER", "default").strip().lower()
+    return t if t in TIER_ORDER else "default"
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+class HourlyCounter:
+    """Sliding one-hour window of events, per instance."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stamps: deque[float] = deque()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._stamps.clear()
+
+    def _prune(self, now: float) -> None:
+        while self._stamps and now - self._stamps[0] > 3600:
+            self._stamps.popleft()
+
+    def take(self, limit: int) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            self._prune(now)
+            if len(self._stamps) >= limit:
+                return False
+            self._stamps.append(now)
+            return True
+
+    def refund(self) -> None:
+        with self._lock:
+            if self._stamps:
+                self._stamps.pop()
+
+
+LLM_BUDGET = HourlyCounter()       # public LLM-backed requests
+MANAGED_BUDGET_COUNTER = HourlyCounter()   # managed-agent sessions started
+
+
+def llm_gate(unlocked: bool) -> tuple[bool, str]:
+    """May this request call a model? Returns (ok, notice-if-not). Consumes one unit of the hourly budget."""
+    if not llm_available():
+        return False, NO_MODEL_NOTICE
+    if unlocked:
+        return True, ""
+    if not LLM_BUDGET.take(_int_env("DEMO_LLM_CALLS_PER_HOUR", 300)):
+        return False, ("The hourly demo budget reached its limit, so this is the retrieval-only fallback. "
+                       "Model-backed answers return within the hour.")
+    return True, ""
 
 
 def clean_text(raw: Any, field: str) -> str:
@@ -148,6 +259,9 @@ def active_providers() -> list[str]:
 
 
 def llm_available() -> bool:
+    """False when the operator kill switch (DEMO_LLM_ENABLED=0) is on or no provider is configured."""
+    if os.getenv("DEMO_LLM_ENABLED", "1").strip().lower() in ("0", "false", "off", "no"):
+        return False
     return bool(active_providers())
 
 
@@ -165,36 +279,48 @@ def _is_free(provider: str) -> bool:
     return provider == "fake" or (provider in reg.PROVIDERS and reg.PROVIDERS[provider].free)
 
 
-def route_dict(d: Decision, pinned: bool) -> dict:
+def route_dict(d: Decision, pinned: bool, failed: bool = False) -> dict:
     cost = 0.0 if _is_free(d.provider) else d.est_cost_usd()
-    return {"tier": d.tier, "provider": d.provider, "model": d.model, "reason": d.reason,
-            "est_cost_usd": round(cost, 6), "pinned": pinned}
+    out = {"tier": d.tier, "provider": d.provider, "model": d.model, "reason": d.reason,
+           "est_cost_usd": round(cost, 6), "pinned": pinned}
+    if failed:
+        out["failed"] = True
+    return out
 
 
-def decide(question: str, provider: str, min_tier: str = "quick") -> tuple[Decision, bool]:
-    """provider 'auto' -> the router picks the tier; a pinned provider skips routing. Never raises on no providers."""
+def decide(question: str, provider: str, min_tier: str = "quick", unlocked: bool = False) -> tuple[Decision, bool]:
+    """provider 'auto' -> the router picks the tier; a pinned provider skips routing. Never raises on no providers.
+    Public requests are clamped to MAX_TIER and use the public provider order (free first, Claude last)."""
     if provider != "auto":
         name = valid_provider(provider)
+        # Public visitors may pin free providers or the capped gateway, never a directly billed paid key.
+        if not unlocked and name not in ("fake", "gateway") and not reg.PROVIDERS[name].free:
+            raise ApiError(403, "locked", f"Pinning {name!r} is a presenter feature. Use Auto-route or a free provider.")
         if name != "fake" and not reg.is_configured(name):
             raise ApiError(400, "provider_not_configured", f"Provider {name!r} has no API key on this server.")
         model = "fake-chat" if name == "fake" else reg.PROVIDERS[name].model_for("default")
         return Decision(tier="default", reason="provider pinned by caller (routing skipped)", provider=name, model=model), True
     d = route(question)
+    names = reg.order_for(unlocked)
+    d.provider = names[0] if names else ""
     if TIER_ORDER[d.tier] < TIER_ORDER[min_tier]:
         d.reason += f" (raised to {min_tier}: tool calling must be reliable)"
         d.tier = min_tier
-        if d.provider:
-            d.model = reg.PROVIDERS[d.provider].model_for(min_tier)
+    cap = max_tier_public()
+    if not unlocked and TIER_ORDER[d.tier] > TIER_ORDER[cap]:
+        d.reason += f" (capped at {cap} on the public demo)"
+        d.tier = cap
+    d.model = reg.PROVIDERS[d.provider].model_for(d.tier) if d.provider else ""
     if not d.provider and fake_mode():
         d.provider, d.model = "fake", "fake-chat"
     return d, False
 
 
-def build_model(d: Decision, pinned: bool):
-    """The pinned provider alone, or the fallback chain starting from the best configured one."""
+def build_model(d: Decision, pinned: bool, unlocked: bool = False):
+    """The pinned provider alone, or a short fallback chain (public order unless unlocked)."""
     if pinned:
         return get_llm(provider=d.provider, tier=d.tier, **LLM_KWARGS)
-    return get_llm_chain(tier=d.tier, **LLM_KWARGS)
+    return get_llm_chain(tier=d.tier, names=reg.order_for(unlocked), max_providers=MAX_CHAIN, **LLM_KWARGS)
 
 
 def _text(content: Any) -> str:
@@ -239,9 +365,23 @@ def index():
 
 
 @app.get("/api/health")
-def health():
+def health(request: Request):
     return {"status": "ok", "retriever": os.getenv("RETRIEVER", "bm25"),
-            "mode": "llm" if llm_available() else "retrieval-only", "providers": active_providers()}
+            "mode": "llm" if llm_available() else "retrieval-only", "providers": active_providers(),
+            "access": {"unlock_configured": bool(os.getenv("DEMO_UNLOCK")), "unlocked": is_unlocked(request),
+                       "max_tier_public": max_tier_public()}}
+
+
+class UnlockIn(BaseModel):
+    code: str
+
+
+@app.post("/api/unlock", dependencies=[Depends(rl_heavy)])
+def unlock(body: UnlockIn):
+    code = os.getenv("DEMO_UNLOCK", "")
+    if not code or len(body.code) > 200 or not hmac.compare_digest(body.code.encode(), code.encode()):
+        raise ApiError(403, "locked", "Wrong presenter code.")
+    return {"unlocked": True}
 
 
 @app.get("/api/providers", dependencies=[Depends(rl_light)])
@@ -255,40 +395,47 @@ class AskIn(BaseModel):
     provider: str = "auto"
 
 
-def run_rag(question: str, d: Decision, pinned: bool, tracer: Tracer) -> dict:
+def run_rag(question: str, d: Decision, pinned: bool, tracer: Tracer, unlocked: bool = False,
+            allow_llm: bool = True, notice: str = NO_MODEL_NOTICE, deadline: float | None = None) -> dict:
     """Retrieve, then generate with the chosen model; degrade to extractive answers on any model failure."""
     rag = _rag()
     docs = rag.get_retriever().invoke(question, config={"callbacks": [tracer]})
     out: dict[str, Any] = {"contexts": _contexts(docs), "sources": sorted({x.metadata["source"] for x in docs})}
-    if llm_available() and (d.provider or fake_mode()):
+    if deadline is not None and time.monotonic() >= deadline:
+        allow_llm, notice = False, "This request ran out of time before a model could be called, so this is the retrieval-only fallback."
+    if allow_llm and (d.provider or fake_mode()):
         try:
             from langchain_core.output_parsers import StrOutputParser
 
-            chain = rag.RAG_PROMPT | build_model(d, pinned) | StrOutputParser()
+            chain = rag.RAG_PROMPT | build_model(d, pinned, unlocked) | StrOutputParser()
             out["answer"] = chain.invoke({"context": rag.format_context(docs), "question": question},
                                          config=_cfg(tracer, "showcase-ask"))
             out["mode"] = "llm"
             return out
         except Exception as e:  # noqa: BLE001  quota, outage, bad key... never a 500
             log.warning("model call failed: %s", type(e).__name__)
-            out["notice"] = NO_MODEL_NOTICE + f" (last error: {type(e).__name__})"
+            out["notice"] = NO_MODEL_NOTICE + f" (last error: {safe_error(e)})"
+            out["failed"] = True
     else:
-        out["notice"] = NO_MODEL_NOTICE
+        out["notice"] = notice
     out["answer"], out["mode"] = extractive_answer(docs), "retrieval-only"
     return out
 
 
 @app.post("/api/ask", dependencies=[Depends(rl_heavy)])
-def ask(body: AskIn):
+def ask(body: AskIn, request: Request):
     t0 = time.perf_counter()
+    deadline = time.monotonic() + REQUEST_DEADLINE_S
+    unlocked = is_unlocked(request)
     question = clean_text(body.question, "question")
     tracer = Tracer()
     with tracer.span("route", "route") as sp:
-        d, pinned = decide(question, body.provider)
+        d, pinned = decide(question, body.provider, unlocked=unlocked)
         sp["detail"] = f"tier={d.tier} provider={d.provider or 'none'} model={d.model or 'none'}"
-    result = run_rag(question, d, pinned, tracer)
+    ok, why = llm_gate(unlocked)
+    result = run_rag(question, d, pinned, tracer, unlocked, ok, why, deadline)
     flush()
-    result["route"] = route_dict(d, pinned)
+    result["route"] = route_dict(d, pinned, result.pop("failed", False))
     result["latency_ms"] = int((time.perf_counter() - t0) * 1000)
     result["trace"] = tracer.snapshot()
     return result
@@ -301,7 +448,8 @@ class CompareIn(BaseModel):
 
 
 @app.post("/api/compare", dependencies=[Depends(rl_heavy)])
-def compare(body: CompareIn):
+def compare(body: CompareIn, request: Request):
+    require_unlocked(request)
     question = clean_text(body.question, "question")
     if not 1 <= len(body.providers) <= 4:
         raise ApiError(400, "bad_request", "`providers` needs between 1 and 4 names.")
@@ -316,7 +464,9 @@ def compare(body: CompareIn):
         t = time.perf_counter()
         try:
             if name != "fake" and not reg.is_configured(name):
-                raise RuntimeError("not configured on this server (no API key)")
+                res["answer"], res["error"] = "", "not configured on this server (no API key)"
+                res["latency_ms"] = int((time.perf_counter() - t) * 1000)
+                return res
             msg = (rag.RAG_PROMPT | get_llm(provider=name, tier="default", **LLM_KWARGS)).invoke(prompt_in)
             res["answer"] = _text(msg.content)
             usage = getattr(msg, "usage_metadata", None) or {}
@@ -324,18 +474,18 @@ def compare(body: CompareIn):
                 res["tokens_out"] = usage["output_tokens"]
         except Exception as e:  # noqa: BLE001
             res["answer"] = ""
-            res["error"] = f"{type(e).__name__}: {scrub(e, 160)}"
+            res["error"] = safe_error(e)   # type + HTTP status only: provider messages can echo secrets
         res["latency_ms"] = int((time.perf_counter() - t) * 1000)
         return res
 
     with ThreadPoolExecutor(max_workers=len(names)) as pool:
-        results = list(pool.map(one, names))
+        results = list(pool.map(lambda n: contextvars.copy_context().run(one, n), names))
     return {"results": results}
 
 
 # --------------------------------------------------------------------------- /api/chat + /api/approve
 _CHECKPOINTER = None
-_THREADS: "OrderedDict[str, bool]" = OrderedDict()   # thread_id -> waiting for approval?
+_THREADS: "OrderedDict[str, dict]" = OrderedDict()   # thread_id -> {"pending": waiting for approval?, "turns": int}
 _THREADS_LOCK = threading.Lock()
 MAX_THREADS = 200
 _THREAD_LOCKS: dict[str, threading.Lock] = {}
@@ -350,22 +500,51 @@ def checkpointer():
     return _CHECKPOINTER
 
 
-def _remember(thread_id: str, pending: bool) -> None:
+def _drop_checkpoint(thread_id: str) -> None:
+    try:
+        checkpointer().delete_thread(thread_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _remember(thread_id: str, pending: bool, turn: bool = False) -> None:
     with _THREADS_LOCK:
-        _THREADS[thread_id] = pending
+        st = _THREADS.setdefault(thread_id, {"pending": False, "turns": 0})
+        st["pending"] = pending
+        st["turns"] += 1 if turn else 0
         _THREADS.move_to_end(thread_id)
         while len(_THREADS) > MAX_THREADS:
             old, _ = _THREADS.popitem(last=False)
             _THREAD_LOCKS.pop(old, None)
-            try:
-                checkpointer().delete_thread(old)
-            except Exception:  # noqa: BLE001
-                pass
+            _drop_checkpoint(old)
+
+
+def _forget(thread_id: str) -> None:
+    """Delete a thread's checkpoint (after an error it could be left with a dangling tool call)."""
+    with _THREADS_LOCK:
+        _THREADS.pop(thread_id, None)
+    _drop_checkpoint(thread_id)
+
+
+def _thread_state(thread_id: str) -> dict:
+    with _THREADS_LOCK:
+        return dict(_THREADS.get(thread_id) or {"pending": False, "turns": 0})
 
 
 def _thread_lock(thread_id: str) -> threading.Lock:
     with _THREADS_LOCK:
+        if len(_THREAD_LOCKS) > MAX_THREADS * 4:   # locks of forgotten threads: keep the dict bounded
+            for k in [k for k, lk in _THREAD_LOCKS.items() if k not in _THREADS and not lk.locked()]:
+                del _THREAD_LOCKS[k]
         return _THREAD_LOCKS.setdefault(thread_id, threading.Lock())
+
+
+def _check_chat_thread(thread_id: str) -> None:
+    st = _thread_state(thread_id)
+    if st["pending"]:
+        raise ApiError(409, "approval_pending", "This conversation is waiting for you to approve or reject an action.")
+    if st["turns"] >= MAX_TURNS:
+        raise ApiError(409, "thread_full", f"This conversation reached its {MAX_TURNS}-message limit. Start a new chat.")
 
 
 class ChatIn(BaseModel):
@@ -385,87 +564,114 @@ def _steps(messages: list) -> list[dict]:
             for m in messages[last_human + 1:] for c in (getattr(m, "tool_calls", None) or [])]
 
 
-def agent_turn(payload: Any, thread_id: str, d: Decision, tracer: Tracer, label: str) -> dict:
+def agent_turn(payload: Any, thread_id: str, d: Decision, tracer: Tracer, label: str, unlocked: bool = False,
+               new_turn: bool = True, deadline: float | None = None) -> dict:
     """Run one graph invocation. Returns the shared chat/approve response (without route/trace)."""
     from langgraph.errors import GraphRecursionError
 
-    try:
-        from graph import build_graph
+    with _thread_lock(thread_id):
+        if new_turn:   # re-check under the lock: a concurrent request may have left an approval pending
+            _check_chat_thread(thread_id)
+        elif not _thread_state(thread_id)["pending"]:
+            raise ApiError(400, "nothing_pending", "This conversation has no action waiting for approval.")
+        try:
+            from graph import DEADLINE_MESSAGE, build_graph
 
-        graph = build_graph(checkpointer=checkpointer(), llm=build_model(d, False))
-        config = {**_cfg(tracer, label, session_id=thread_id),
-                  "configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
-        with _thread_lock(thread_id):
+            graph = build_graph(checkpointer=checkpointer(), llm=build_model(d, False, unlocked),
+                                max_history=MAX_HISTORY, deadline=deadline)
+            config = {**_cfg(tracer, label, session_id=thread_id),
+                      "configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
             result = graph.invoke(payload, config)
-    except GraphRecursionError:
-        _remember(thread_id, False)
-        return {"status": "done", "thread_id": thread_id, "steps": [], "mode": "llm",
-                "reply": "I stopped because this took too many steps. Try a simpler request."}
-    except Exception as e:  # noqa: BLE001
-        log.warning("agent turn failed: %s", type(e).__name__)
-        return degraded_chat(thread_id, f" (last error: {type(e).__name__})")
-    interrupts = result.get("__interrupt__")
-    if interrupts:
-        _remember(thread_id, True)
-        return {"status": "pending_approval", "thread_id": thread_id, "mode": "llm",
-                "approval_request": dict(interrupts[0].value), "steps": _steps(result["messages"])}
-    _remember(thread_id, False)
-    return {"status": "done", "thread_id": thread_id, "mode": "llm",
-            "reply": _text(result["messages"][-1].content), "steps": _steps(result["messages"])}
+        except GraphRecursionError:
+            _forget(thread_id)
+            return {"status": "done", "thread_id": thread_id, "steps": [], "mode": "llm",
+                    "reply": "I stopped because this took too many steps. Try a simpler request."}
+        except Exception as e:  # noqa: BLE001
+            log.warning("agent turn failed: %s", type(e).__name__)
+            _forget(thread_id)
+            return degraded_chat(thread_id, f" (last error: {safe_error(e)})", failed=True)
+        interrupts = result.get("__interrupt__")
+        if interrupts:
+            _remember(thread_id, True, turn=new_turn)
+            return {"status": "pending_approval", "thread_id": thread_id, "mode": "llm",
+                    "approval_request": dict(interrupts[0].value), "steps": _steps(result["messages"])}
+        _remember(thread_id, False, turn=new_turn)
+        reply = _text(result["messages"][-1].content)
+        resp = {"status": "done", "thread_id": thread_id, "mode": "llm", "reply": reply,
+                "steps": _steps(result["messages"])}
+        if reply == DEADLINE_MESSAGE:
+            resp.update(mode="retrieval-only", notice="This request ran out of its time budget before the model could answer.")
+        return resp
 
 
-def degraded_chat(thread_id: str, extra: str = "") -> dict:
+def degraded_chat(thread_id: str, extra: str = "", failed: bool = False, notice: str = NO_MODEL_NOTICE) -> dict:
     return {"status": "done", "thread_id": thread_id, "steps": [], "mode": "retrieval-only",
             "reply": "The agent needs a language model to decide which tools to call, and none is available right now. "
                      "The Ask section still works in retrieval-only mode.",
-            "notice": NO_MODEL_NOTICE + extra}
+            "notice": notice + extra, **({"_failed": True} if failed else {})}
 
 
 def _finish_chat(resp: dict, d: Decision, tracer: Tracer) -> dict:
     flush()
-    resp["route"] = route_dict(d, False)
+    resp["route"] = route_dict(d, False, resp.pop("_failed", False))
     resp["trace"] = tracer.snapshot()
     return resp
 
 
 @app.post("/api/chat", dependencies=[Depends(rl_heavy)])
-def chat(body: ChatIn):
+def chat(body: ChatIn, request: Request):
+    deadline = time.monotonic() + REQUEST_DEADLINE_S
+    unlocked = is_unlocked(request)
     message = clean_text(body.message, "message")
-    thread_id = clean_id(body.thread_id, "thread_id") if body.thread_id else f"t-{uuid.uuid4().hex[:10]}"
+    if body.thread_id:
+        if not THREAD_RE.match(body.thread_id):
+            raise ApiError(400, "bad_request", "`thread_id` is not a valid id.")
+        thread_id = body.thread_id
+        _check_chat_thread(thread_id)
+    else:
+        thread_id = uuid.uuid4().hex
     tracer = Tracer()
     with tracer.span("route", "route") as sp:
-        d, _ = decide(message, "auto", min_tier="default")
+        d, _ = decide(message, "auto", min_tier="default", unlocked=unlocked)
         sp["detail"] = f"tier={d.tier} provider={d.provider or 'none'} model={d.model or 'none'}"
-    if not llm_available():
+    ok, why = llm_gate(unlocked)
+    if not ok:
         _remember(thread_id, False)
-        return _finish_chat(degraded_chat(thread_id), d, tracer)
-    resp = agent_turn({"messages": [{"role": "user", "content": message}]}, thread_id, d, tracer, "showcase-chat")
+        return _finish_chat(degraded_chat(thread_id, notice=why), d, tracer)
+    resp = agent_turn({"messages": [{"role": "user", "content": message}]}, thread_id, d, tracer, "showcase-chat",
+                      unlocked, deadline=deadline)
     return _finish_chat(resp, d, tracer)
 
 
 @app.post("/api/approve", dependencies=[Depends(rl_heavy)])
-def approve(body: ApproveIn):
+def approve(body: ApproveIn, request: Request):
     from langgraph.types import Command
 
-    thread_id = clean_id(body.thread_id, "thread_id")
-    known = checkpointer().get_tuple({"configurable": {"thread_id": thread_id}}) is not None
-    if not known:
+    deadline = time.monotonic() + REQUEST_DEADLINE_S
+    unlocked = is_unlocked(request)
+    thread_id = body.thread_id
+    known = bool(THREAD_RE.match(thread_id)) and \
+        checkpointer().get_tuple({"configurable": {"thread_id": thread_id}}) is not None
+    if not known:   # also what a restarted instance answers: the UI re-sends the original message
         raise ApiError(404, "unknown_thread", "No such conversation on this server instance. Start a new chat.")
-    if not _THREADS.get(thread_id):
+    if not _thread_state(thread_id)["pending"]:
         raise ApiError(400, "nothing_pending", "This conversation has no action waiting for approval.")
     tracer = Tracer()
     with tracer.span("route", "route") as sp:
-        d, _ = decide("resume approved action", "auto", min_tier="default")
+        d, _ = decide("resume approved action", "auto", min_tier="default", unlocked=unlocked)
         d.reason = "resuming a paused agent turn at the default tier"
         sp["detail"] = f"tier={d.tier} provider={d.provider or 'none'} model={d.model or 'none'}"
-    if not llm_available():
-        return _finish_chat(degraded_chat(thread_id), d, tracer)
-    resp = agent_turn(Command(resume={"approved": body.approved}), thread_id, d, tracer, "showcase-approve")
+    ok, why = llm_gate(unlocked)
+    if not ok:
+        return _finish_chat(degraded_chat(thread_id, notice=why), d, tracer)
+    resp = agent_turn(Command(resume={"approved": body.approved}), thread_id, d, tracer, "showcase-approve",
+                      unlocked, new_turn=False, deadline=deadline)
     return _finish_chat(resp, d, tracer)
 
 
 # --------------------------------------------------------------------------- /api/evals
 _EVAL_CACHE: dict[str, Any] = {"at": 0.0, "mode": None, "payload": None}
+_EVAL_LOCK = threading.Lock()
 EVAL_TTL = 600
 GATE = 0.8
 
@@ -484,15 +690,24 @@ def _load_eval_module():
 
 @app.get("/api/evals", dependencies=[Depends(rl_light)])
 def evals():
-    """Golden-set RAG eval, deterministic metrics only. Cached 10 min so a public URL cannot burn model budget."""
+    """Golden-set RAG eval. Retrieval-only unless EVAL_USE_LLM=1, cached 10 min, computed once under a lock, so a
+    public URL cannot burn model budget."""
     t0 = time.perf_counter()
-    mode_now = "llm" if llm_available() else "retrieval-only"
-    if _EVAL_CACHE["payload"] and _EVAL_CACHE["mode"] == mode_now and time.time() - _EVAL_CACHE["at"] < EVAL_TTL:
-        return {**_EVAL_CACHE["payload"], "cached": True, "latency_ms": int((time.perf_counter() - t0) * 1000)}
+    use_llm = os.getenv("EVAL_USE_LLM") == "1" and llm_available()
+    mode_now = "llm" if use_llm else "retrieval-only"
+    with _EVAL_LOCK:
+        if _EVAL_CACHE["payload"] and _EVAL_CACHE["mode"] == mode_now and time.time() - _EVAL_CACHE["at"] < EVAL_TTL:
+            return {**_EVAL_CACHE["payload"], "cached": True, "latency_ms": int((time.perf_counter() - t0) * 1000)}
+        payload = _compute_evals(use_llm)
+        _EVAL_CACHE.update(at=time.time(), mode=mode_now, payload=payload)
+    return {**payload, "latency_ms": int((time.perf_counter() - t0) * 1000)}
+
+
+def _compute_evals(use_llm: bool) -> dict:
     ev = _load_eval_module()
     rag = _rag()
     cases = ev.DATASET["rag"]
-    d, _ = decide("short lookup", "auto") if llm_available() else (None, False)
+    d, _ = decide("short lookup", "auto") if use_llm else (None, False)
     if d is not None:
         d.tier = "quick"
         d.model = reg.PROVIDERS[d.provider].model_for("quick") if d.provider in reg.PROVIDERS else d.model
@@ -514,14 +729,16 @@ def evals():
         return {**case, "sources": sources, "docs": docs, "answer": answer}
 
     with ThreadPoolExecutor(max_workers=5) as pool:
-        raw = list(pool.map(one, cases))
+        raw = list(pool.map(lambda c: contextvars.copy_context().run(one, c), cases))
     mode = "llm" if state["llm_ok"] and all(r["answer"] is not None for r in raw) else "retrieval-only"
     for r in raw:
         if r["answer"] is None or mode == "retrieval-only":
             r["answer"] = extractive_answer(r["docs"]) if r["source"] else "I don't know based on the policies."
     metrics = ev.deterministic_metrics([{**r, "contexts": [x.page_content for x in r["docs"]]} for r in raw])
     if mode == "retrieval-only":
-        metrics["refusal_rate_out_of_scope"] = None   # needs a model: the extractive fallback cannot refuse
+        # The extractive fallback cannot refuse and always cites, so these two would be vacuous: report null.
+        metrics["refusal_rate_out_of_scope"] = None
+        metrics["citation_rate"] = None
 
     def rank_of(r: dict) -> int | None:
         """1-based position of the expected source in the retriever's ranked results (None if absent)."""
@@ -543,15 +760,14 @@ def evals():
         "gate": {"name": "mrr", "threshold": GATE, "passed": metrics["mrr"] >= GATE},
         "rows": rows, "mode": mode,
     }
-    _EVAL_CACHE.update(at=time.time(), mode=mode_now, payload=payload)
-    return {**payload, "latency_ms": int((time.perf_counter() - t0) * 1000)}
+    return payload
 
 
 # --------------------------------------------------------------------------- Managed Agents
 APP_TAG = "gen-ai-showcase"
 CONSOLE = "https://platform.claude.com/workspaces/default/sessions/{}"
 MANAGED_BETA = ["managed-agents-2026-04-01"]
-MANAGED_BUDGET = {"type": "limit", "max_list_cost": {"amount": "100", "currency": "USD"}}   # amount is in cents
+MANAGED_BUDGET = {"type": "limit", "max_list_cost": {"amount": "25", "currency": "USD"}}   # amount is in cents: $0.25 per session
 SEARCH_TOOL = "search_acme_policies"
 OUT = "/mnt/session/outputs"
 
@@ -632,7 +848,8 @@ class StartIn(BaseModel):
 
 
 @app.post("/api/managed/start", dependencies=[Depends(rl_heavy)])
-def managed_start(body: StartIn):
+def managed_start(body: StartIn, request: Request):
+    require_unlocked(request)
     _require_managed()
     task = MANAGED_TASKS.get(body.task_id)
     if task is None:
@@ -640,6 +857,9 @@ def managed_start(body: StartIn):
     agent: dict[str, Any] = {"type": "agent", "id": os.environ["MANAGED_AGENT_ID"]}
     if os.getenv("MANAGED_AGENT_VERSION"):
         agent["version"] = os.environ["MANAGED_AGENT_VERSION"]
+    if not MANAGED_BUDGET_COUNTER.take(_int_env("MANAGED_STARTS_PER_HOUR", 3)):
+        raise ApiError(429, "managed_cap", "The hourly limit for background agent sessions on this instance is reached. "
+                                           "Try again later.", {"Retry-After": "600"})
     try:
         client = _client()
         session = client.beta.sessions.create(
@@ -648,8 +868,10 @@ def managed_start(body: StartIn):
         client.beta.sessions.events.send(
             session_id=session.id, events=[{"type": "user.message", "content": [{"type": "text", "text": task["prompt"]}]}])
     except ApiError:
+        MANAGED_BUDGET_COUNTER.refund()
         raise
     except Exception as e:  # noqa: BLE001
+        MANAGED_BUDGET_COUNTER.refund()   # nothing was billed for a session that never started
         raise _upstream(e) from e
     _VERIFIED_SESSIONS.add(session.id)
     return {"session_id": session.id, "console_url": CONSOLE.format(session.id)}
@@ -759,6 +981,11 @@ def managed_events(session_id: str, after: str | None = None):
     return {"events": feed, "cursor": ids[-1] if ids else (after or ""), "done": done, "files": files}
 
 
+def _too_large() -> ApiError:
+    return ApiError(413, "too_large", "That file is too large to download through this demo. Open the session in the "
+                                      "Claude console to get it.")
+
+
 @app.get("/api/managed/file", dependencies=[Depends(rl_light)])
 def managed_file(session_id: str, file_id: str):
     _require_managed()
@@ -770,11 +997,15 @@ def managed_file(session_id: str, file_id: str):
         meta = next((f for f in _list_files(client, session_id) if f.id == file_id), None)
         if meta is None:
             raise ApiError(404, "unknown_file", "No such file in this session.")
+        if (meta.size_bytes or 0) > MAX_FILE_BYTES:
+            raise _too_large()
         data = client.beta.files.download(file_id, betas=MANAGED_BETA).read()
     except ApiError:
         raise
     except Exception as e:  # noqa: BLE001
         raise _upstream(e) from e
+    if len(data) > MAX_FILE_BYTES:
+        raise _too_large()
     name = re.sub(r"[^A-Za-z0-9._-]", "_", meta.filename or "output.txt")[:100]
     return Response(data, media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})

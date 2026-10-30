@@ -10,12 +10,13 @@ Building it by hand (rather than create_agent) shows the three ideas interviews 
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from langchain_core.messages import SystemMessage  # noqa: E402
+from langchain_core.messages import AIMessage, SystemMessage  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 from langgraph.graph import END, START, MessagesState, StateGraph  # noqa: E402
 from langgraph.prebuilt import ToolNode, tools_condition  # noqa: E402
@@ -39,13 +40,31 @@ def _bind_tools(llm):
     return llm.bind_tools(TOOLS)
 
 
-def build_graph(checkpointer=None, llm=None):
+DEADLINE_MESSAGE = "I ran out of time for this request, so I stopped before asking the model again. Please try a shorter request."
+
+
+def trim_history(messages: list, keep: int = 8) -> list:
+    """The last ~`keep` messages, widened backwards to start at a human message. A tool result is therefore never
+    sent without the tool call that produced it (providers reject an orphan tool message)."""
+    if keep <= 0 or len(messages) <= keep:
+        return list(messages)
+    start = len(messages) - keep
+    while start > 0 and getattr(messages[start], "type", "") != "human":
+        start -= 1
+    return list(messages[start:])
+
+
+def build_graph(checkpointer=None, llm=None, max_history: int | None = None, deadline: float | None = None):
     """`llm` lets a caller choose the model per request (the hosted demo routes by difficulty);
-    default behaviour is unchanged: get_llm()."""
+    default behaviour is unchanged: get_llm(). `max_history` sends only the last N messages to the model
+    (state keeps everything); `deadline` is a time.monotonic() value after which the model is skipped."""
     llm = _bind_tools(llm or get_llm())
 
     def agent(state: MessagesState) -> dict:
-        return {"messages": [llm.invoke([SYSTEM, *state["messages"]])]}
+        if deadline is not None and time.monotonic() >= deadline:
+            return {"messages": [AIMessage(DEADLINE_MESSAGE)]}
+        msgs = trim_history(state["messages"], max_history) if max_history else state["messages"]
+        return {"messages": [llm.invoke([SYSTEM, *msgs])]}
 
     graph = StateGraph(MessagesState)
     graph.add_node("agent", agent)

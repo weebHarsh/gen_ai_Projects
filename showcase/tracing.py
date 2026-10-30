@@ -31,6 +31,15 @@ def scrub(text: Any, limit: int = 200) -> str:
     return out[:limit]
 
 
+def safe_error(e: BaseException) -> str:
+    """Exception type name plus HTTP status when known. Never the message (providers can echo keys or prompts)."""
+    status = getattr(e, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(getattr(e, "response", None), "status_code", None)
+    name = type(e).__name__
+    return f"{name} (HTTP {status})" if isinstance(status, int) else name
+
+
 class Tracer(BaseCallbackHandler):
     """Collects spans for one request. Create one per request and pass it in `config["callbacks"]`."""
 
@@ -88,7 +97,7 @@ class Tracer(BaseCallbackHandler):
                 span["detail"] = (span["detail"] + " | paused for human approval").strip(" |")
             elif error is not None:
                 span["status"] = "error"
-                span["detail"] = f"{type(error).__name__}: {scrub(error, 120)}"
+                span["detail"] = safe_error(error)
             if detail:
                 span["detail"] = (span["detail"] + " | " + detail).strip(" |")
             if tokens:

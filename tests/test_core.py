@@ -46,6 +46,36 @@ def test_gateway_needs_token(monkeypatch):
     assert reg.is_configured("gateway")
 
 
+def test_gateway_ignores_nothing_but_env_and_verified_context(monkeypatch):
+    """A per-request token only counts when the web layer put it in the ContextVar; AI_GATEWAY_API_KEY wins."""
+    assert reg.gateway_token() is None
+    tok = reg.request_oidc.set("ctx-token")
+    try:
+        assert reg.is_configured("gateway") and reg.gateway_token() == "ctx-token"
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "api-key")
+        assert reg.gateway_token() == "api-key"
+    finally:
+        reg.request_oidc.reset(tok)
+    assert reg.gateway_token() == "api-key"
+
+
+def test_order_for_public_puts_claude_last(monkeypatch):
+    for k in ("ANTHROPIC_API_KEY", "GROQ_API_KEY", "AI_GATEWAY_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.setenv(k, "value-12345678")
+    assert reg.order_for(True) == reg.available() == ["anthropic", "gateway", "groq", "deepseek"]
+    assert reg.order_for(False) == ["groq", "gateway", "anthropic", "deepseek"]
+    assert reg.FALLBACK_ORDER[0] == "anthropic"   # unchanged for other callers
+
+
+def test_gateway_accepts_explicit_api_key_and_chain_names(monkeypatch):
+    llm = get_llm(provider="gateway", tier="default", api_key="explicit-key", timeout=10, max_retries=0)
+    assert llm.anthropic_api_key.get_secret_value() == "explicit-key" and llm.max_retries == 0
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k1-12345678")
+    monkeypatch.setenv("GROQ_API_KEY", "k2-12345678")
+    chain = get_llm_chain(names=["groq", "anthropic"], max_providers=2)
+    assert chain.runnable.metadata["provider"] == "groq"
+
+
 def test_cloudflare_needs_both_vars(monkeypatch):
     monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "x")
     assert not reg.is_configured("cloudflare")

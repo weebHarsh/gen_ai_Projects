@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
@@ -98,9 +99,14 @@ FALLBACK_ORDER = ["anthropic", "gateway", "gemini", "groq", "zai", "siliconflow"
                   "cohere", "cloudflare"]
 
 
+# A per-request Vercel OIDC token that the web layer has already verified (never a raw header, never os.environ).
+request_oidc: ContextVar[str | None] = ContextVar("request_oidc", default=None)
+
+
 def gateway_token() -> str | None:
-    """API key, or the OIDC token Vercel exposes to the function (set per request by the app)."""
-    return os.getenv("AI_GATEWAY_API_KEY") or os.getenv("VERCEL_OIDC_TOKEN")
+    """AI_GATEWAY_API_KEY first, then the OIDC token Vercel injects into the environment at runtime, then a
+    per-request verified token (ContextVar). Nothing here ever reads a request header."""
+    return os.getenv("AI_GATEWAY_API_KEY") or os.getenv("VERCEL_OIDC_TOKEN") or request_oidc.get()
 
 
 def is_configured(name: str) -> bool:
@@ -111,6 +117,20 @@ def is_configured(name: str) -> bool:
 def available() -> list[str]:
     """Names of providers usable right now, in fallback order."""
     return [n for n in FALLBACK_ORDER if is_configured(n)]
+
+
+def order_for(unlocked: bool) -> list[str]:
+    """Configured providers in the order a request of this access level should try them.
+
+    Unlocked (presenter): FALLBACK_ORDER, Claude first. Public: free providers first, then the capped Vercel
+    gateway, then the direct Anthropic key (a stranger's traffic should hit the owner's billed key last),
+    then any other paid provider.
+    """
+    if unlocked:
+        return available()
+    free = [n for n in FALLBACK_ORDER if PROVIDERS[n].free and n != "gateway"]
+    paid = [n for n in FALLBACK_ORDER if n not in free and n not in ("gateway", "anthropic")]
+    return [n for n in [*free, "gateway", "anthropic", *paid] if is_configured(n)]
 
 
 def describe() -> list[dict]:

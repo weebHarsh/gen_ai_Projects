@@ -4,7 +4,8 @@ version = "1.0.0"
 description = "Hosted GenAI demo: RAG with routing and tracing, a human-in-the-loop agent, evals, and Managed Agents."
 requires-python = ">=3.12"
 # Runtime only, kept light for serverless bundle size and cold start. No chromadb / fastembed / faiss /
-# onnxruntime (retrieval is BM25 here) and no test or eval frameworks (see requirements.txt for the full lab).
+# onnxruntime (retrieval is BM25 here) and no test or eval frameworks. requirements.txt is now this same light set;
+# requirements-full.txt is the full lab.
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
@@ -14,7 +15,7 @@ dependencies = [
     "langchain-anthropic>=1.0",
     "langchain-openai>=1.0",
     "langchain-text-splitters>=1.0",
-    "anthropic>=2.0",
+    "anthropic>=2.3",
     "rank-bm25>=0.2.2",
     "pydantic>=2.7",
     "python-dotenv>=1.0",
