@@ -65,9 +65,14 @@ def get_llm(provider: str | None = None, model: str | None = None, tier: str | N
         token = kwargs.pop("api_key", None) or reg.gateway_token()
         if not token:
             raise RuntimeError("gateway needs AI_GATEWAY_API_KEY or a Vercel OIDC token")
-        return ChatAnthropic(model=model or reg.PROVIDERS["gateway"].model_for(tier or "default"),
+        gw_tier = tier or "default"
+        extra = {}
+        if not model:  # explicit model ids are used as given; defaults get the gateway's own fallback list
+            extra["model_kwargs"] = {"extra_body": {"providerOptions": {"gateway": {
+                "models": reg.GATEWAY_FALLBACK_MODELS.get(gw_tier, [])}}}}
+        return ChatAnthropic(model=model or reg.PROVIDERS["gateway"].model_for(gw_tier),
                              base_url="https://ai-gateway.vercel.sh", api_key=token,
-                             max_tokens=kwargs.pop("max_tokens", 4000), **kwargs)
+                             max_tokens=kwargs.pop("max_tokens", 4000), **extra, **kwargs)
     if p == "openai":
         from langchain_openai import ChatOpenAI
 

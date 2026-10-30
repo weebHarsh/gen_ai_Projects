@@ -10,6 +10,7 @@ Tiers (used by common/router.py):  quick -> cheap/fast,  default -> balanced,  c
 from __future__ import annotations
 
 import os
+import re
 import sys
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -19,6 +20,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 CLAUDE_TIERS = {"quick": "claude-haiku-5-5", "default": "claude-sonnet-5-5", "complex": "claude-opus-5-5"}
+
+
+# If a gateway slug is not in the catalog, the gateway itself retries these documented slugs (no extra round trip from us).
+GATEWAY_FALLBACK_MODELS = {"quick": ["anthropic/claude-sonnet-5"], "default": ["anthropic/claude-sonnet-5"],
+                           "complex": ["anthropic/claude-opus-5"]}
 
 
 @dataclass(frozen=True)
@@ -54,8 +60,10 @@ PROVIDERS: dict[str, Provider] = {p.name: p for p in [
     Provider("anthropic", "Claude (Anthropic API)", ("ANTHROPIC_API_KEY",), kind="anthropic",
              models=CLAUDE_TIERS, free=False, signup="platform.claude.com"),
     # AI Gateway authenticates with an API key, or with the OIDC token Vercel injects at runtime.
+    # Gateway slugs use a dot for decimal versions (anthropic/claude-opus-5.5), unlike Anthropic's own ids.
     Provider("gateway", "Claude via Vercel AI Gateway", (), kind="gateway", base_url="https://ai-gateway.vercel.sh",
-             models={t: f"anthropic/{m}" for t, m in CLAUDE_TIERS.items()}, free=False, signup="vercel.com"),
+             models={t: "anthropic/" + re.sub(r"-(\d+)-(\d+)$", r"-\1.\2", m) for t, m in CLAUDE_TIERS.items()},
+             free=False, signup="vercel.com", note="needs credits on the Vercel team"),
     _p("gemini", "Google Gemini", ["GEMINI_API_KEY"], "https://generativelanguage.googleapis.com/v1beta/openai/",
        {"quick": "gemini-2.5-flash-lite", "default": "gemini-2.5-flash", "complex": "gemini-2.5-pro"},
        signup="aistudio.google.com/apikey", note="not available in EU/UK"),

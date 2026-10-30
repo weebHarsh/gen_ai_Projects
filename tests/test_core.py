@@ -106,7 +106,7 @@ def test_claude_tiers_map_to_haiku_sonnet_opus(monkeypatch):
 def test_gateway_uses_gateway_base_url(monkeypatch):
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "k")
     llm = get_llm(provider="gateway", tier="default")
-    assert llm.model == "anthropic/claude-sonnet-5-5"
+    assert llm.model == "anthropic/claude-sonnet-5.5"
     assert "ai-gateway.vercel.sh" in llm.anthropic_api_url
 
 
@@ -216,3 +216,18 @@ def test_bm25_defaults_to_four_results():
     # because other tests in this process legitimately import chromadb/faiss.
     rag = _rag()
     assert rag.get_retriever(backend="bm25").k == 4
+
+
+def test_gateway_slugs_are_dotted_with_gateway_side_fallbacks(monkeypatch):
+    """Vercel AI Gateway names decimal versions with a dot (anthropic/claude-opus-5.5); a dashed slug would 404
+    every call and silently degrade the live demo to retrieval-only."""
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "k")
+    expected = {"quick": ("anthropic/claude-haiku-5.5", "anthropic/claude-sonnet-5"),
+                "default": ("anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5"),
+                "complex": ("anthropic/claude-opus-5.5", "anthropic/claude-opus-5")}
+    for tier, (primary, fallback) in expected.items():
+        payload = get_llm(provider="gateway", tier=tier)._get_request_payload([("human", "hi")])
+        assert payload["model"] == primary
+        assert payload["extra_body"]["providerOptions"]["gateway"]["models"] == [fallback]
+    explicit = get_llm(provider="gateway", model="anthropic/claude-opus-5")._get_request_payload([("human", "hi")])
+    assert explicit["model"] == "anthropic/claude-opus-5" and "extra_body" not in explicit
