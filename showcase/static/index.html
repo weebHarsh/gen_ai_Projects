@@ -103,11 +103,13 @@ button[disabled]{opacity:.55;cursor:not-allowed}
 
 /* access */
 .access{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap}
-.access .acc-form{display:flex;gap:6px;flex:1 1 100%;align-items:center;flex-wrap:wrap}
-.access .acc-form input{flex:1 1 140px;min-width:0;width:auto}
+.access-panel:empty{display:none}
+.access-panel{padding-bottom:12px}
+.access-panel .acc-form{display:flex;gap:6px;max-width:420px;align-items:center;flex-wrap:wrap}
+.access-panel .acc-form input{flex:1 1 140px;min-width:0;width:auto}
 .access .sm,button.sm{min-height:32px;padding:4px 11px;font-size:.78rem}
-.access .acc-form[hidden]{display:none}
-.acc-msg{flex:1 1 100%;font-size:.8rem;color:var(--ink-2)}
+.access-panel .acc-form[hidden]{display:none}
+.acc-msg{font-size:.8rem;color:var(--ink-2);display:block;margin-top:4px}
 .acc-msg.err{color:var(--err)}
 .tiernote{font-size:.85rem;color:var(--ink-2);margin:8px 0 0}
 .state.lock{border-style:solid;border-color:var(--warn);background:var(--warn-soft);color:var(--ink)}
@@ -244,6 +246,7 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
         <button id="theme" type="button" aria-label="Toggle colour theme">Theme</button>
       </div>
     </div>
+    <div class="access-panel" id="access-panel"></div>
   </div>
   <div class="wrap"><nav class="tabs" aria-label="Sections" id="nav"></nav></div>
 </header>
@@ -483,7 +486,7 @@ function applyLocks(){
   if(state.bgLock)state.bgLock(locked);
 }
 function renderAccess(){
-  var box=clear($('#access')),a=state.access;
+  var box=clear($('#access')),panel=clear($('#access-panel')),a=state.access;
   if(!a||!a.unlock_configured)return;
   var msg=h('span',{class:'acc-msg',id:'acc-msg',role:'status'});
   if(a.unlocked){
@@ -511,7 +514,7 @@ function renderAccess(){
       go.disabled=false;inp.select();
     });
   });
-  box.appendChild(open);box.appendChild(form);box.appendChild(msg);
+  box.appendChild(open);panel.appendChild(form);panel.appendChild(msg);
 }
 function loadProviders(force){
   if(state.provPromise&&!force)return state.provPromise;
