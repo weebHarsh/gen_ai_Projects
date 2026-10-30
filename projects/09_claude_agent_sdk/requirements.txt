@@ -1,0 +1,4 @@
+# Claude Agent SDK (bundles the Claude Code runtime). Needs ANTHROPIC_API_KEY to actually run.
+claude-agent-sdk>=0.2,<0.3
+python-dotenv>=1.0
+# `custom-tool` additionally reuses project 02's RAG pipeline (langchain, rank-bm25) from the root requirements.txt.

@@ -28,7 +28,6 @@ from pydantic import BaseModel
 load_dotenv()
 
 DEFAULT_MODELS = {
-    "anthropic": "claude-opus-5-5",
     "openai": "gpt-5-mini",
     "do": "llama3.3-70b-instruct",
 }
@@ -38,36 +37,87 @@ def provider() -> str:
     return os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
 
 
-def get_llm(**kwargs: Any) -> BaseChatModel:
-    """Return a chat model for the configured provider. kwargs pass through to the model class."""
-    p = provider()
-    model = os.getenv("LLM_MODEL") or DEFAULT_MODELS.get(p, "")
+def get_llm(provider: str | None = None, model: str | None = None, tier: str | None = None,
+            **kwargs: Any) -> BaseChatModel:
+    """Return a chat model.
 
+    provider: a name from common.providers.PROVIDERS, or openai | azure | do | fake. Default: LLM_PROVIDER.
+    tier:     quick | default | complex, picks the provider's model for that tier (Claude: Haiku/Sonnet/Opus).
+    model:    explicit model id; wins over tier. LLM_MODEL env var also wins over tier when set.
+    kwargs pass through to the underlying model class.
+    """
+    from common import providers as reg
+
+    p = (provider or globals()["provider"]()).strip().lower()
+    model = model or os.getenv("LLM_MODEL") or None
+
+    if p == "fake":
+        return FakeChatModel()
     if p == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
         # No temperature: current Claude models reject sampling params; tune with effort instead.
-        return ChatAnthropic(model=model, max_tokens=16000, **kwargs)
+        return ChatAnthropic(model=model or reg.PROVIDERS["anthropic"].model_for(tier or "complex"),
+                             max_tokens=kwargs.pop("max_tokens", 16000), **kwargs)
+    if p == "gateway":
+        from langchain_anthropic import ChatAnthropic
+
+        token = reg.gateway_token()
+        if not token:
+            raise RuntimeError("gateway needs AI_GATEWAY_API_KEY or a Vercel OIDC token")
+        return ChatAnthropic(model=model or reg.PROVIDERS["gateway"].model_for(tier or "default"),
+                             base_url="https://ai-gateway.vercel.sh", api_key=token,
+                             max_tokens=kwargs.pop("max_tokens", 4000), **kwargs)
     if p == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model, **kwargs)
+        return ChatOpenAI(model=model or DEFAULT_MODELS["openai"], **kwargs)
     if p == "azure":
         from langchain_openai import AzureChatOpenAI
 
-        return AzureChatOpenAI(azure_deployment=model, **kwargs)
+        return AzureChatOpenAI(azure_deployment=model or "", **kwargs)
     if p == "do":
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
-            model=model,
+            model=model or DEFAULT_MODELS["do"],
             api_key=os.environ["DO_MODEL_ACCESS_KEY"],
             base_url=os.getenv("DO_INFERENCE_BASE_URL", "https://inference.do-ai.run/v1"),
             **kwargs,
         )
-    if p == "fake":
-        return FakeChatModel()
+    if p in reg.PROVIDERS:  # every other registry entry speaks the OpenAI chat-completions protocol
+        from langchain_openai import ChatOpenAI
+
+        spec = reg.PROVIDERS[p]
+        if not reg.is_configured(p):
+            raise RuntimeError(f"{p}: set {', '.join(spec.env_keys)}")
+        base_url = spec.base_url
+        if p == "cloudflare":
+            base_url = f"https://api.cloudflare.com/client/v4/accounts/{os.environ['CLOUDFLARE_ACCOUNT_ID']}/ai/v1"
+        return ChatOpenAI(model=model or spec.model_for(tier or "default"), api_key=os.environ[spec.env_keys[0]],
+                          base_url=base_url, max_tokens=kwargs.pop("max_tokens", 2000), **kwargs)
     raise ValueError(f"Unknown LLM_PROVIDER={p!r}")
+
+
+def get_llm_chain(tier: str = "default", prefer: str | None = None, max_providers: int = 4, **kwargs: Any):
+    """A model that falls through to the next configured provider on any error (quota, 429, outage).
+
+    Order = common.providers.FALLBACK_ORDER (Claude first, then free tiers), `prefer` first if set.
+    Falls back to the FakeChatModel only if nothing is configured and LLM_PROVIDER=fake.
+    """
+    from common import providers as reg
+
+    names = reg.available()
+    if prefer and prefer in names:
+        names = [prefer] + [n for n in names if n != prefer]
+    if not names:
+        if provider() == "fake":
+            return FakeChatModel()
+        raise RuntimeError("no LLM provider configured")
+    models = [get_llm(provider=n, tier=tier, **dict(kwargs)) for n in names[:max_providers]]
+    for n, m in zip(names, models):
+        m.metadata = {**(m.metadata or {}), "provider": n}
+    return models[0].with_fallbacks(models[1:]) if len(models) > 1 else models[0]
 
 
 def structured(llm: BaseChatModel, schema: type[BaseModel]):
@@ -75,11 +125,16 @@ def structured(llm: BaseChatModel, schema: type[BaseModel]):
 
     Claude Opus 5.5 / Sonnet 5.5 reject *forced* tool_choice, so for Anthropic we use the
     native JSON-schema output mode (output_config.format) instead of a forced tool call.
+    Fallback chains structure each model separately and re-chain them.
     """
+    if hasattr(llm, "runnable") and hasattr(llm, "fallbacks"):  # RunnableWithFallbacks
+        return structured(llm.runnable, schema).with_fallbacks([structured(f, schema) for f in llm.fallbacks])
     if isinstance(llm, FakeChatModel):
         return llm.with_structured_output(schema)
-    method = "json_schema" if provider() in {"anthropic", "openai", "azure"} else "function_calling"
-    return llm.with_structured_output(schema, method=method)
+    cls = type(llm).__name__
+    native_json = cls in {"ChatAnthropic", "AzureChatOpenAI"} or (
+        cls == "ChatOpenAI" and "api.openai.com" in str(getattr(llm, "openai_api_base", "") or "api.openai.com"))
+    return llm.with_structured_output(schema, method="json_schema" if native_json else "function_calling")
 
 
 # --------------------------------------------------------------------------- fake model

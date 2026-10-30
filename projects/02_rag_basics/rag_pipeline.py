@@ -5,9 +5,12 @@ measure and deploy is exactly the one you learn here.
 """
 from __future__ import annotations
 
+import os
+import re
 import sys
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -15,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.retrievers import BaseRetriever
 from langchain_core.vectorstores import VectorStore
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
@@ -72,10 +76,46 @@ def build_vectorstore(chunks: list[Document], store: str = "chroma") -> VectorSt
     raise ValueError(f"Unknown store {store!r}")
 
 
-@lru_cache(maxsize=2)
-def get_retriever(store: str = "chroma", k: int = 4):
-    """MMR = Maximal Marginal Relevance: relevant *and* diverse chunks (less duplication)."""
-    vs = build_vectorstore(split_documents(load_documents()), store)
+class BM25Retriever(BaseRetriever):
+    """Lexical (keyword) retrieval with BM25: pure Python, no model download, no embeddings.
+
+    Why it exists: on serverless hosting (the Vercel demo) the vector stack is too heavy for
+    cold starts. BM25 is also a strong baseline that beats dense retrieval on exact terms
+    (ids, codes, "INR 7,000", policy numbers); production systems usually combine both
+    (hybrid) and add a reranker.
+    """
+
+    docs: list[Document]
+    k: int = 4
+    _bm25: Any = None
+    _tokenized: Any = None
+
+    @staticmethod
+    def tokenize(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9]+", text.lower())
+
+    def model_post_init(self, __context: Any) -> None:
+        from rank_bm25 import BM25Okapi
+
+        self._bm25 = BM25Okapi([self.tokenize(d.page_content) for d in self.docs])
+
+    def _get_relevant_documents(self, query: str, *, run_manager: Any = None) -> list[Document]:
+        scores = self._bm25.get_scores(self.tokenize(query))
+        ranked = sorted(range(len(self.docs)), key=lambda i: scores[i], reverse=True)[: self.k]
+        return [self.docs[i] for i in ranked if scores[i] > 0] or [self.docs[i] for i in ranked[:1]]
+
+
+@lru_cache(maxsize=4)
+def get_retriever(store: str = "chroma", k: int = 4, backend: str | None = None):
+    """RETRIEVER=vector (default, Chroma/FAISS with MMR) or bm25 (lexical, serverless-friendly).
+
+    MMR = Maximal Marginal Relevance: relevant *and* diverse chunks (less duplication).
+    """
+    backend = (backend or os.getenv("RETRIEVER", "vector")).lower()
+    chunks = split_documents(load_documents())
+    if backend == "bm25":
+        return BM25Retriever(docs=chunks, k=k)
+    vs = build_vectorstore(chunks, store)
     return vs.as_retriever(search_type="mmr", search_kwargs={"k": k, "fetch_k": 12})
 
 
@@ -94,10 +134,17 @@ RAG_PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
-def answer(question: str, store: str = "chroma", config: dict | None = None) -> dict:
-    """Returns {'answer', 'contexts', 'sources'} - the shape evals (project 06) need."""
-    docs = get_retriever(store).invoke(question, config=config)
-    chain = RAG_PROMPT | get_llm() | StrOutputParser()
+def retrieve(question: str, store: str = "chroma", config: dict | None = None) -> list[Document]:
+    return get_retriever(store).invoke(question, config=config)
+
+
+def answer(question: str, store: str = "chroma", config: dict | None = None, llm: Any = None) -> dict:
+    """Returns {'answer', 'contexts', 'sources'} - the shape evals (project 06) need.
+
+    `llm` lets callers pick the model (the showcase compares providers); default get_llm().
+    """
+    docs = retrieve(question, store, config)
+    chain = RAG_PROMPT | (llm or get_llm()) | StrOutputParser()
     text = chain.invoke({"context": format_context(docs), "question": question}, config=config)
     return {
         "answer": text,
