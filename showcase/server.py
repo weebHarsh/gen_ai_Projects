@@ -522,12 +522,25 @@ def evals():
     metrics = ev.deterministic_metrics([{**r, "contexts": [x.page_content for x in r["docs"]]} for r in raw])
     if mode == "retrieval-only":
         metrics["refusal_rate_out_of_scope"] = None   # needs a model: the extractive fallback cannot refuse
+
+    def rank_of(r: dict) -> int | None:
+        """1-based position of the expected source in the retriever's ranked results (None if absent)."""
+        order = [x.metadata["source"] for x in r["docs"]]
+        return order.index(r["source"]) + 1 if r["source"] in order else None
+
+    answerable = [r for r in raw if r["source"]]
+    ranks = [rank_of(r) for r in answerable]
+    # Hit-in-top-4 is easy on an 8-document corpus (about half the corpus is returned), so the gate uses
+    # rank-aware metrics: top-1 rate and mean reciprocal rank (MRR).
+    metrics["top1_rate"] = sum(k == 1 for k in ranks) / max(len(ranks), 1)
+    metrics["mrr"] = sum(1 / k for k in ranks if k) / max(len(ranks), 1)
     rows = [{"question": r["question"], "expected_source": r["source"], "sources": r["sources"],
+             "rank": rank_of(r) if r["source"] else None,
              "hit": (r["source"] in r["sources"]) if r["source"]
              else (ev.REFUSAL in r["answer"].lower() if mode == "llm" else None)} for r in raw]
     payload = {
         "metrics": metrics,
-        "gate": {"name": "source_hit_rate", "threshold": GATE, "passed": metrics["source_hit_rate"] >= GATE},
+        "gate": {"name": "mrr", "threshold": GATE, "passed": metrics["mrr"] >= GATE},
         "rows": rows, "mode": mode,
     }
     _EVAL_CACHE.update(at=time.time(), mode=mode_now, payload=payload)

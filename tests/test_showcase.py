@@ -286,10 +286,15 @@ def test_graph_default_behaviour_unchanged():
 # --------------------------------------------------------------------------- evals
 def test_evals(client):
     b = client.get("/api/evals").json()
-    assert set(b["metrics"]) == {"source_hit_rate", "refusal_rate_out_of_scope", "citation_rate"}
-    assert b["gate"] == {"name": "source_hit_rate", "threshold": 0.8, "passed": b["metrics"]["source_hit_rate"] >= 0.8}
-    assert len(b["rows"]) == 10 and b["rows"][0].keys() >= {"question", "expected_source", "sources", "hit"}
-    assert b["metrics"]["source_hit_rate"] >= 0.8 and b["gate"]["passed"]
+    assert set(b["metrics"]) == {"source_hit_rate", "refusal_rate_out_of_scope", "citation_rate", "top1_rate", "mrr"}
+    assert b["gate"] == {"name": "mrr", "threshold": 0.8, "passed": b["metrics"]["mrr"] >= 0.8}
+    assert len(b["rows"]) == 10 and b["rows"][0].keys() >= {"question", "expected_source", "sources", "hit", "rank"}
+    # Rank-based metrics are the honest ones: hit-in-top-4 is trivially high on an 8-document corpus.
+    assert 0.8 <= b["metrics"]["mrr"] <= 1.0 and b["gate"]["passed"]
+    assert b["metrics"]["top1_rate"] <= b["metrics"]["source_hit_rate"]
+    answerable = [r for r in b["rows"] if r["expected_source"]]
+    assert all(isinstance(r["rank"], int) and r["rank"] >= 1 for r in answerable)
+    assert [r["rank"] for r in b["rows"] if not r["expected_source"]] == [None]
     assert b["mode"] == "llm" and b["latency_ms"] >= 0
     assert client.get("/api/evals").json()["cached"] is True
 

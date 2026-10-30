@@ -41,6 +41,8 @@
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);overflow-x:hidden}
+p,li,dd,h2,h3,summary{overflow-wrap:anywhere}
+td,th{overflow-wrap:normal}
 .wrap{max-width:1120px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 a{color:var(--accent)}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:3px}
@@ -317,14 +319,14 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
 <!-- EVALS -->
 <section id="sec-evals" class="panel-sec" aria-labelledby="h-evals">
   <div class="sec-head"><h2 id="h-evals">Golden-set eval</h2>
-    <p><b>Source hit rate</b> is how often the retriever's top results include the document that holds the answer. <b>Refusal rate</b> is how often out-of-scope questions get an honest "I don't know". <b>Citation rate</b> is how often answers cite a source. The offline project adds Ragas and DeepEval for faithfulness and answer relevance, which need an LLM judge and run outside this page.</p></div>
+    <p><b>MRR</b> (mean reciprocal rank) scores where the right document lands in the ranking: 1.0 means first every time. <b>Top 4</b> is easy to pass on a small corpus, because the retriever returns about half the documents, so the gate uses MRR. The two lower-ranked questions below are what hybrid search and a reranker would fix. <b>Refusal rate</b> is how often out-of-scope questions get an honest "I don't know". <b>Citation rate</b> is how often answers cite a source. The offline project adds Ragas and DeepEval for faithfulness and answer relevance, which need an LLM judge and run outside this page.</p></div>
   <div class="card">
     <div class="row" style="align-items:center">
       <button class="primary" id="ev-go" type="button">Run golden-set eval</button>
       <span class="faint" id="ev-hint">Runs every question in the golden set against the live pipeline.</span>
     </div>
   </div>
-  <div id="ev-out" style="margin-top:12px"><div class="state"><strong>Eval not run yet</strong>Press the button. You will get three metric tiles, a pass or fail against the release gate, and one row per golden question.</div></div>
+  <div id="ev-out" style="margin-top:12px"><div class="state"><strong>Eval not run yet</strong>Press the button. You will get the metric tiles, a pass or fail against the release gate (mean reciprocal rank), and one row per golden question.</div></div>
 </section>
 
 <!-- BACKGROUND -->
@@ -707,7 +709,7 @@ $('#ev-go').addEventListener('click',function(){
       h('span',{class:'muted'},[(g.name||'gate')+' >= '+pct(g.threshold)+' needed. Mode ',h('b',{text:d.mode||'-'}),', ran in ',h('span',{class:'num',text:fmtMs(d.latency_ms)}),'.'])
     ]));
     var tiles=h('div',{class:'tiles'});
-    [['source_hit_rate','Source hit rate'],['refusal_rate_out_of_scope','Out-of-scope refusal'],['citation_rate','Citation rate']].forEach(function(k){
+    [['mrr','MRR (rank of right document)'],['top1_rate','Right document ranked first'],['source_hit_rate','Right document in top 4'],['refusal_rate_out_of_scope','Out-of-scope refusal'],['citation_rate','Citation rate']].forEach(function(k){
       var v=m[k[0]];
       tiles.appendChild(h('div',{class:'tile'},[h('div',{class:'l',text:k[1]}),h('div',{class:'v',text:pct(v)}),h('div',{class:'bar'},[h('i',{style:'width:'+Math.round((v||0)*100)+'%'})])]));
     });
@@ -716,8 +718,9 @@ $('#ev-go').addEventListener('click',function(){
     if(!rows.length){out.appendChild(stateBox('No rows returned','The golden set came back empty.'));return}
     var tb=h('tbody');rows.forEach(function(r){tb.appendChild(h('tr',{},[
       h('td',{},[r.hit?h('span',{class:'hit','aria-label':'hit',text:'HIT'}):h('span',{class:'miss','aria-label':'miss',text:'MISS'})]),
+      h('td',{class:'mono num',text:r.rank==null?'-':'#'+r.rank}),
       h('td',{text:r.question}),h('td',{class:'mono',text:r.expected_source||'(none expected)'}),h('td',{class:'mono',text:(r.sources||[]).join(', ')||'-'})]))});
-    out.appendChild(h('div',{class:'card'},[h('div',{class:'scroll'},[h('table',{},[h('thead',{},[h('tr',{},['Result','Question','Expected source','Retrieved'].map(function(x){return h('th',{scope:'col',text:x})}))]),tb])])]));
+    out.appendChild(h('div',{class:'card'},[h('div',{class:'scroll'},[h('table',{},[h('thead',{},[h('tr',{},['Result','Rank','Question','Expected source','Retrieved'].map(function(x){return h('th',{scope:'col',text:x})}))]),tb])])]));
   }).catch(function(e){clear(out);out.appendChild(stateBox('The eval did not complete',errMsg(e),true))}).then(function(){btn.disabled=false});
 });
 
