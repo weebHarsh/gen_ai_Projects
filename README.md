@@ -4,6 +4,8 @@ Hands-on mini projects for a **GenAI Engineer** role (Python · LLMs · prompt e
 
 All eight projects share one fictional company (**Acme Corp**) and one knowledge base (`data/acme_kb/`), so each builds on the last: prompt → RAG → agent → multi-agent → traces → evals → managed agent → deployed API.
 
+**Live demo:** https://genai-showcase-weebharshs-projects.vercel.app (RAG with cost-aware routing, an agent with human approval, trace waterfall, rank-based evals, 18-provider model registry). Public visitors are capped at the Sonnet tier; the presenter unlock enables Opus, model comparison and Managed Agents. Presenting? Read [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
+
 **Live tracker + decision log:** https://claude.ai/artifact/6A9JXoaGLsyMuh7DhYMdP3 (tick off study blocks, keep notes, log ADRs; your progress is saved)
 
 ## The day (≈10.5 h, P0 first; drop P1 if short on time)
@@ -39,6 +41,9 @@ Extra environments (to keep dependency pins isolated):
 - Evals: `pip install -r projects/06_agent_evals/requirements-evals.txt`
 - CrewAI/AutoGen: a separate venv with `projects/04_multi_agent/requirements-agents.txt`
 - LlamaIndex: `projects/02_rag_basics/requirements-llamaindex.txt`
+
+## Hosting and keys
+The demo in `showcase/` runs on Vercel's free plan (`pyproject.toml` + `vercel.json`). Add the unlock code and provider keys as environment variables in the Vercel dashboard (names and signup links in [`docs/PROVIDERS.md`](docs/PROVIDERS.md)), then redeploy. The API contract and its access rules are in [`docs/SHOWCASE_API.md`](docs/SHOWCASE_API.md). Full-stack alternative: [`deploy/huggingface/`](deploy/huggingface/).
 
 ## Switching models
 Every project calls `common/llm.py → get_llm()`. Change provider with one env var:
