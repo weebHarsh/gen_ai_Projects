@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "showcase/server.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{tests/**,projects/04_multi_agent/**,projects/06_agent_evals/ragas_results.csv,.venv/**,docs/**}"
+    }
+  }
+}

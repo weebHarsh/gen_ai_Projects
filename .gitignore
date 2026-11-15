@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.chroma/
+*.faiss/
+.pytest_cache/
+.deepeval/
+projects/07_claude_managed_agents/managed_agent_ids.json
+projects/07_claude_managed_agents/outputs/
+ragas_results.csv

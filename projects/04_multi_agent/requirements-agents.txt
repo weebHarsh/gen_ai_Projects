@@ -1,0 +1,6 @@
+# Separate venv recommended: CrewAI pins many dependencies.
+crewai>=1.0
+autogen-agentchat>=0.7
+autogen-ext[anthropic]>=0.7
+tiktoken
+python-dotenv

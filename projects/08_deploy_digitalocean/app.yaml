@@ -1,0 +1,27 @@
+# DigitalOcean App Platform spec.  Deploy:  doctl apps create --spec projects/08_deploy_digitalocean/app.yaml
+# Update:  doctl apps update <app-id> --spec projects/08_deploy_digitalocean/app.yaml
+name: acme-genai-api
+region: blr                      # Bangalore, closest to Noida
+services:
+  - name: api
+    github:
+      repo: weebHarsh/gen_ai_Projects
+      branch: main
+      deploy_on_push: true       # CI/CD: every push to main redeploys
+    source_dir: /
+    dockerfile_path: projects/08_deploy_digitalocean/Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-2gb   # embeddings + LangGraph need ~1 GB; check `doctl apps tier instance-size list`
+    health_check:
+      http_path: /health
+    envs:
+      - {key: LLM_PROVIDER, value: anthropic, scope: RUN_TIME}
+      - {key: EMBEDDINGS_PROVIDER, value: fastembed, scope: RUN_TIME}
+      - {key: ANTHROPIC_API_KEY, type: SECRET, scope: RUN_TIME}      # set the value in the dashboard
+      - {key: APP_API_KEY, type: SECRET, scope: RUN_TIME}
+      - {key: LANGFUSE_PUBLIC_KEY, type: SECRET, scope: RUN_TIME}
+      - {key: LANGFUSE_SECRET_KEY, type: SECRET, scope: RUN_TIME}
+      - {key: LANGFUSE_BASE_URL, value: "https://cloud.langfuse.com", scope: RUN_TIME}
+      # The agent's ticket tool calls this app's own mock ServiceDesk endpoint:
+      - {key: TICKET_API_URL, value: "${APP_URL}/servicedesk/tickets", scope: RUN_TIME}
