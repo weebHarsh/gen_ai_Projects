@@ -118,3 +118,6 @@ cdnjs (Mermaid). Every state has a designed empty/loading/error treatment. Show 
 - Control characters stripped from inputs include bidi/zero-width: U+200B-U+200F, U+202A-U+202E, U+2066-U+2069.
 - `route` carries `"failed": true` and the response `mode:"retrieval-only"` when the chosen provider errored.
 - UI: remove the Swagger link (`/docs` is disabled); describe Langfuse as optional; replace the example prompt "Check the status of ticket INC-1042".
+
+### POST /api/leaderboard (unlocked only)
+Body {providers:[1-3 names], n:1-6}. Runs the first n golden RAG questions per provider; returns {metric, rows:[{provider, questions, coverage, avg_latency_ms, errors, error?}]} sorted by coverage. Deterministic scoring (reference-token coverage), no judge model.

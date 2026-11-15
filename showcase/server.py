@@ -483,6 +483,57 @@ def compare(body: CompareIn, request: Request):
     return {"results": results}
 
 
+# --------------------------------------------------------------------------- /api/leaderboard
+class LeaderboardIn(BaseModel):
+    providers: list[str]
+    n: int = 5
+
+
+def _ref_score(answer: str, reference: str) -> float:
+    """Deterministic: share of the reference's numbers/long words found in the answer (no judge model, no cost)."""
+    toks = {t.strip(".,") for t in re.findall(r"[A-Za-z0-9][A-Za-z0-9,.]*", reference.lower())
+            if len(t) > 4 or any(c.isdigit() for c in t)}
+    toks.discard("")
+    return round(sum(t in answer.lower() for t in toks) / len(toks), 2) if toks else 0.0
+
+
+@app.post("/api/leaderboard", dependencies=[Depends(rl_heavy)])
+def leaderboard(body: LeaderboardIn, request: Request):
+    """Run the first n golden questions through each chosen provider: reference coverage and latency."""
+    require_unlocked(request)
+    if not 1 <= len(body.providers) <= 3:
+        raise ApiError(400, "bad_request", "`providers` needs between 1 and 3 names.")
+    n = max(1, min(int(body.n), 6))
+    names = list(dict.fromkeys(valid_provider(p) for p in body.providers))
+    rag = _rag()
+    golden = json.loads((ROOT / "projects" / "06_agent_evals" / "golden_dataset.json").read_text())["rag"][:n]
+
+    def run(name: str) -> dict:
+        row: dict[str, Any] = {"provider": name, "scores": [], "latencies_ms": [], "errors": 0}
+        if name != "fake" and not reg.is_configured(name):
+            row["error"] = "not configured on this server (no API key)"
+            return row
+        llm = get_llm(provider=name, tier="default", **LLM_KWARGS)
+        for g in golden:
+            t = time.perf_counter()
+            try:
+                docs = rag.get_retriever().invoke(g["question"])
+                msg = (rag.RAG_PROMPT | llm).invoke({"context": rag.format_context(docs), "question": g["question"]})
+                row["scores"].append(_ref_score(_text(msg.content), g["reference"]))
+            except Exception as e:  # noqa: BLE001
+                row["errors"] += 1
+                row["last_error"] = safe_error(e)
+            row["latencies_ms"].append(int((time.perf_counter() - t) * 1000))
+        sc, lat = row.pop("scores"), row.pop("latencies_ms")
+        row.update(questions=len(golden), coverage=round(sum(sc) / len(sc), 2) if sc else None,
+                   avg_latency_ms=int(sum(lat) / len(lat)) if lat else None)
+        return row
+
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        rows = list(pool.map(lambda n_: contextvars.copy_context().run(run, n_), names))
+    return {"metric": "reference coverage (deterministic)", "rows": sorted(rows, key=lambda r: -(r.get("coverage") or -1))}
+
+
 # --------------------------------------------------------------------------- /api/chat + /api/approve
 _CHECKPOINTER = None
 _THREADS: "OrderedDict[str, dict]" = OrderedDict()   # thread_id -> {"pending": waiting for approval?, "turns": int}

@@ -22,3 +22,8 @@ Any model call on the live site, free-provider model ids, Managed Agents against
 
 ## Session settings
 Autocompact is set to trigger at ~65% context via `.claude/settings.json` (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`).
+
+## Plan audit (final)
+Done: gateway provider, BM25, provider registry and fallbacks, showcase (ask, agent, approve, evals, providers, compare, leaderboard, managed), tracing, guardrails, project 09, Vercel deploy, main + draft PR, HF fallback, demo script, ADRs.
+Manual (cannot be done from here): AI Gateway monthly budget (5 USD), env vars and keys in Vercel, Anthropic spend limit, Langfuse keys.
+Unverifiable here: live model calls, Managed Agents against the real API.

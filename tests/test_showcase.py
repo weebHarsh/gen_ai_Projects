@@ -973,3 +973,13 @@ print("OK")
 """
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120)
     assert out.returncode == 0 and "OK" in out.stdout, out.stderr[-2000:]
+
+
+def test_leaderboard_locked_then_runs_with_fake(monkeypatch):
+    from fastapi.testclient import TestClient
+    from showcase import server
+    monkeypatch.setenv("DEMO_UNLOCK", "unlock-code-12345")
+    c = TestClient(server.app)
+    assert c.post("/api/leaderboard", json={"providers": ["fake"]}).status_code in (401, 403)
+    r = c.post("/api/leaderboard", json={"providers": ["fake"], "n": 2}, headers={"x-demo-unlock": "unlock-code-12345"})
+    assert r.status_code == 200 and r.json()["rows"][0]["questions"] == 2

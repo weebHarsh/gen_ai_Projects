@@ -322,6 +322,7 @@ footer{padding:20px 0 40px;color:var(--ink-3);font:.75rem var(--mono)}
         <div class="grow"><label class="f" for="cmp-q">Question</label>
           <input type="text" id="cmp-q" maxlength="500" value="How many unused leave days can I carry forward?" required></div>
         <button class="primary" type="submit" id="cmp-go">Compare</button>
+        <button type="button" id="lb-go" title="Run the first 5 golden questions through the ticked providers (max 3)">Leaderboard</button>
       </div>
     </form>
     <div id="cmp-out" aria-live="polite"><div class="state" style="margin-top:12px"><strong>No comparison yet</strong>Tick at least one configured provider and press Compare.</div></div>
@@ -752,6 +753,21 @@ $('#cmp-form').addEventListener('submit',function(ev){
     if(e.code==='locked'||e.status===403){out.appendChild(lockBox());loadHealth();return}
     out.appendChild(stateBox('Comparison failed',errMsg(e),true));
   }).then(function(){btn.disabled=isLocked()||!$$('#cmp-pick input').length});
+});
+
+$('#lb-go').addEventListener('click',function(){
+  var sel=$$('#cmp-pick input:checked').map(function(i){return i.value}).slice(0,3);
+  var out=clear($('#cmp-out'));
+  if(isLocked()){out.appendChild(lockBox());return}
+  if(!sel.length){out.appendChild(stateBox('Pick a provider','Tick one to three providers.'));return}
+  var btn=$('#lb-go');btn.disabled=true;out.appendChild(skel(4));
+  api('/api/leaderboard',{body:{providers:sel,n:5}}).then(function(d){
+    clear(out);
+    var t=h('table',{},[h('thead',{},[h('tr',{},['Provider','Coverage','Avg latency','Errors'].map(function(x){return h('th',{text:x})}))])]);
+    var tb=h('tbody');
+    (d.rows||[]).forEach(function(r){tb.appendChild(h('tr',{},[h('td',{text:r.provider}),h('td',{class:'num',text:r.error?r.error:(r.coverage==null?'-':String(r.coverage))}),h('td',{class:'num',text:fmtMs(r.avg_latency_ms)}),h('td',{class:'num',text:String(r.errors||0)})]))});
+    t.appendChild(tb);out.appendChild(h('p',{class:'muted',text:'Metric: '+d.metric+' on the first 5 golden questions.'}));out.appendChild(t);
+  }).catch(function(e){clear(out);if(e.status===403){out.appendChild(lockBox());return}out.appendChild(stateBox('Leaderboard failed',errMsg(e),true))}).then(function(){btn.disabled=isLocked()});
 });
 
 /* ---------- TRACE ---------- */
